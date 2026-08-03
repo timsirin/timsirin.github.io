@@ -1,0 +1,10 @@
+timsirin/
+├── backend/
+│   ├── package.json
+│   ├── .env
+│   ├── .gitignore
+│   ├── database.js
+│   ├── initDB.js
+│   └── server.js
+└── frontend/
+    └── index.html
