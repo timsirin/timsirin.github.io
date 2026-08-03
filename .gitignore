@@ -1,28 +1,7 @@
-# Node.js
 node_modules/
-npm-debug.log
-yarn-debug.log
-yarn-error.log
-
-# Environnement
 .env
-.env.local
-.env.*.local
-
-# Base de données
 db.sqlite
-db.sqlite-journal
-
-# Système
 .DS_Store
-Thumbs.db
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# Logs
-*.log
-
+backend/node_modules/
+backend/db.sqlite
+backend/.env
