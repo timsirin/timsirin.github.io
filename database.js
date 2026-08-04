@@ -1,7 +1,9 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
-const db = new sqlite3.Database(path.join(__dirname, 'db.sqlite'));
+// Utiliser une variable d'environnement pour le chemin (Render Persistent Disk)
+const dbPath = process.env.DATABASE_PATH || path.join(__dirname, 'db.sqlite');
+const db = new sqlite3.Database(dbPath);
 
 db.serialize(() => {
   // Utilisateurs
@@ -24,7 +26,7 @@ db.serialize(() => {
     zoomLink TEXT
   )`);
 
-  // Étudiants (apprenants)
+  // Étudiants
   db.run(`CREATE TABLE IF NOT EXISTS students (
     id TEXT PRIMARY KEY,
     name TEXT,
@@ -41,7 +43,7 @@ db.serialize(() => {
     status TEXT
   )`);
 
-  // Créneaux (planning)
+  // Créneaux
   db.run(`CREATE TABLE IF NOT EXISTS slots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     courseId TEXT,
@@ -49,7 +51,7 @@ db.serialize(() => {
     time TEXT
   )`);
 
-  // Apprenants (pour le planning)
+  // Apprenants (planning)
   db.run(`CREATE TABLE IF NOT EXISTS learners (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     courseId TEXT,

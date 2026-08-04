@@ -33,7 +33,7 @@ const COURSES = [
 ];
 
 // ============================================================
-//  ÉTUDIANTS (quelques exemples)
+//  ÉTUDIANTS (exemples)
 // ============================================================
 const STUDENTS = [
   { id: 's1', name: 'Amine Belkacem', email: 'amine.b@gmail.com', courseId: 'c1' },
@@ -48,17 +48,17 @@ const STUDENTS = [
 //  PRÉSENCES (exemples)
 // ============================================================
 const ATTENDANCE = [
-  { id: 'att1', studentId: 's1', courseId: 'c1', date: '2026-08-03', status: 'present' },
-  { id: 'att2', studentId: 's2', courseId: 'c1', date: '2026-08-03', status: 'present' },
-  { id: 'att3', studentId: 's3', courseId: 'c1', date: '2026-08-03', status: 'absent' },
-  { id: 'att4', studentId: 's4', courseId: 'c12', date: '2026-08-03', status: 'present' }
+  { id: 'att1', studentId: 's1', courseId: 'c1', date: '2026-08-04', status: 'present' },
+  { id: 'att2', studentId: 's2', courseId: 'c1', date: '2026-08-04', status: 'present' },
+  { id: 'att3', studentId: 's3', courseId: 'c1', date: '2026-08-04', status: 'absent' },
+  { id: 'att4', studentId: 's4', courseId: 'c12', date: '2026-08-04', status: 'present' }
 ];
 
 // ============================================================
 //  INITIALISATION
 // ============================================================
 async function initDB() {
-  // Nettoyer
+  // Nettoyer les tables
   db.run('DELETE FROM users');
   db.run('DELETE FROM courses');
   db.run('DELETE FROM students');
@@ -66,7 +66,7 @@ async function initDB() {
   db.run('DELETE FROM slots');
   db.run('DELETE FROM learners');
 
-  // Insérer les utilisateurs avec mots de passe hachés
+  // Insérer les utilisateurs avec hachage
   for (const u of USERS) {
     const hash = await bcrypt.hash(u.password, 10);
     db.run('INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, ?)',

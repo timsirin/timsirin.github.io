@@ -4,11 +4,14 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const multer = require('multer');
+const { exec } = require('child_process');
+const path = require('path');
+const fs = require('fs');
 const db = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || 'timsirinSuperSecretKey';
+const JWT_SECRET = process.env.JWT_SECRET || 'timsirinSecretKey';
 
 // Middleware
 app.use(cors());
@@ -32,7 +35,7 @@ function authenticate(req, res, next) {
 }
 
 // ============================================================
-//  ROUTES
+//  ROUTES PUBLIQUES
 // ============================================================
 
 // --- Login ---
@@ -55,6 +58,53 @@ app.post('/api/auth/login', (req, res) => {
     res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
   });
 });
+
+// ============================================================
+//  ROUTES D'INITIALISATION (protégées par token)
+// ============================================================
+const INIT_TOKEN = 'monTokenSecret123';
+
+// --- Initialiser la base de données ---
+app.get('/init-db', (req, res) => {
+  const token = req.query.token;
+  if (token !== INIT_TOKEN) return res.status(403).json({ error: 'Token invalide' });
+
+  // Vérifier si la base existe déjà
+  const dbPath = process.env.DATABASE_PATH || path.join(__dirname, 'db.sqlite');
+  if (fs.existsSync(dbPath)) {
+    // Supprimer l'ancienne base pour une réinitialisation propre
+    fs.unlinkSync(dbPath);
+  }
+
+  const scriptPath = path.join(__dirname, 'initDB.js');
+  exec(`node ${scriptPath}`, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`Erreur : ${error}`);
+      return res.status(500).json({ error: 'Échec de l\'initialisation', details: stderr });
+    }
+    console.log(stdout);
+    res.json({ message: 'Base de données initialisée avec succès !', output: stdout });
+  });
+});
+
+// --- Debug : voir les utilisateurs (à supprimer après) ---
+app.get('/debug-users', (req, res) => {
+  const token = req.query.token;
+  if (token !== INIT_TOKEN) return res.status(403).json({ error: 'Token invalide' });
+  db.all('SELECT email, password_hash FROM users', (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    const result = rows.map(r => ({
+      email: r.email,
+      hash_length: r.password_hash ? r.password_hash.length : 0,
+      hash_start: r.password_hash ? r.password_hash.substring(0, 20) : null
+    }));
+    res.json(result);
+  });
+});
+
+// ============================================================
+//  ROUTES PROTÉGÉES (authentification requise)
+// ============================================================
 
 // --- Récupérer les cours accessibles ---
 app.get('/api/courses', authenticate, (req, res) => {
@@ -155,7 +205,7 @@ app.get('/api/planning', authenticate, (req, res) => {
           if (errSlots || errLearners) return res.status(500).json({ error: errSlots?.message || errLearners?.message });
           result.push({
             ...course,
-            slots: slots.map(s => ({ date: s.date, time: s.time })),
+            slots: slots.map(s => ({ date: s.date, time: s.time, id: s.id })),
             learners: learners.map(l => l.name)
           });
           remaining--;
@@ -240,6 +290,35 @@ app.delete('/api/slots/:id', authenticate, (req, res) => {
   });
 });
 
+// --- Mettre à jour un slot (PUT) ---
+app.put('/api/slots/:id', authenticate, (req, res) => {
+  const { id } = req.params;
+  const { field, value } = req.body;
+  if (!['date', 'time'].includes(field)) return res.status(400).json({ error: 'Champ invalide' });
+
+  db.get('SELECT courseId FROM slots WHERE id = ?', [id], (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!row) return res.status(404).json({ error: 'Slot introuvable' });
+
+    function update() {
+      db.run(`UPDATE slots SET ${field} = ? WHERE id = ?`, [value, id], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ success: true });
+      });
+    }
+
+    if (req.user.role === 'admin') {
+      update();
+    } else {
+      db.get('SELECT * FROM courses WHERE id = ? AND teacherEmail = ?', [row.courseId, req.user.email], (err2, course) => {
+        if (err2) return res.status(500).json({ error: err2.message });
+        if (!course) return res.status(403).json({ error: 'Non autorisé' });
+        update();
+      });
+    }
+  });
+});
+
 // --- Ajouter un apprenant (learner) ---
 app.post('/api/learners', authenticate, (req, res) => {
   const { courseId, name } = req.body;
@@ -286,6 +365,21 @@ app.delete('/api/learners/:id', authenticate, (req, res) => {
         del();
       });
     }
+  });
+});
+
+// --- Récupérer les learners (avec filtres) ---
+app.get('/api/learners', authenticate, (req, res) => {
+  const { courseId, name } = req.query;
+  let sql = 'SELECT * FROM learners';
+  const params = [];
+  const conditions = [];
+  if (courseId) { conditions.push('courseId = ?'); params.push(courseId); }
+  if (name) { conditions.push('name = ?'); params.push(name); }
+  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+  db.all(sql, params, (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json(rows);
   });
 });
 
@@ -347,7 +441,6 @@ app.post('/api/students/import', authenticate, upload.single('file'), (req, res)
   if (!courseId) return res.status(400).json({ error: 'courseId requis' });
   if (!req.file) return res.status(400).json({ error: 'Aucun fichier uploadé' });
 
-  const fs = require('fs');
   const content = fs.readFileSync(req.file.path, 'utf8');
   const lines = content.split(/\r?\n/).map(l => l.trim()).filter(l => l !== '');
   const names = lines.map(line => line.split(/[;,]\s*/)[0].trim()).filter(n => n !== '');
@@ -375,46 +468,10 @@ app.post('/api/students/import', authenticate, upload.single('file'), (req, res)
     );
   });
 });
+
 // ============================================================
-//  ROUTE D'INITIALISATION DE LA BASE DE DONNÉES (une seule fois)
+//  DÉMARRAGE
 // ============================================================
-const { exec } = require('child_process');
-const path = require('path');
-
-// Route protégée par un token simple (pour éviter les accès non autorisés)
-const INIT_TOKEN = 'monTokenSecret123'; // Changez-le par un mot de passe fort
-
-app.get('/init-db', (req, res) => {
-  const token = req.query.token;
-  if (token !== INIT_TOKEN) {
-    return res.status(403).json({ error: 'Token invalide' });
-  }
-
-  // Exécuter le script initDB.js
-  const scriptPath = path.join(__dirname, 'initDB.js');
-  exec(`node ${scriptPath}`, (error, stdout, stderr) => {
-    if (error) {
-      console.error(`Erreur : ${error}`);
-      return res.status(500).json({ error: 'Échec de l\'initialisation', details: stderr });
-    }
-    console.log(stdout);
-    res.json({ message: 'Base de données initialisée avec succès !', output: stdout });
-  });
-});
-// Route de debug (à supprimer après)
-app.get('/debug-users', (req, res) => {
-  db.all('SELECT email, password_hash FROM users', (err, rows) => {
-    if (err) {
-      return res.status(500).json({ error: err.message });
-    }
-    res.json(rows.map(r => ({
-      email: r.email,
-      hash_length: r.password_hash ? r.password_hash.length : 0,
-      hash_start: r.password_hash ? r.password_hash.substring(0, 20) : null
-    })));
-  });
-});
-// --- Démarrer ---
 app.listen(PORT, () => {
   console.log(`🚀 Serveur Timsirin démarré sur http://localhost:${PORT}`);
 });

@@ -1,7 +1,4 @@
 node_modules/
 .env
 db.sqlite
-.DS_Store
-backend/node_modules/
-backend/db.sqlite
-backend/.env
+uploads/
