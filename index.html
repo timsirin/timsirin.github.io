@@ -1415,8 +1415,9 @@
         // ================================================================
         async function handleLogin(e) {
             e.preventDefault();
-            const email = document.getElementById('loginEmail').value;
-            const password = document.getElementById('loginPassword').value;
+            const email = document.getElementById('loginEmail').value.trim();
+            const password = document.getElementById('loginPassword').value.trim();
+            console.log('🔐 Tentative de connexion avec', email, password);
             try {
                 const data = await fetchWithAuth('/auth/login', {
                     method: 'POST',
