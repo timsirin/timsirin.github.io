@@ -8,6 +8,7 @@ const { exec } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const db = require('./database');
+const { backupDatabase, restoreDatabase } = require('./backup');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -21,7 +22,14 @@ app.use(express.json());
 const upload = multer({ dest: 'uploads/' });
 
 // ============================================================
-//  INITIALISATION AUTOMATIQUE DE LA BASE (si vide)
+//  RESTAURATION DE LA BASE AU DÉMARRAGE
+// ============================================================
+(async () => {
+  await restoreDatabase();
+})();
+
+// ============================================================
+//  INITIALISATION AUTOMATIQUE (si vide)
 // ============================================================
 db.get('SELECT COUNT(*) as count FROM users', (err, row) => {
   if (err) {
@@ -39,6 +47,8 @@ db.get('SELECT COUNT(*) as count FROM users', (err, row) => {
       }
       console.log('✅ Base initialisée avec succès !');
       console.log(stdout);
+      // Sauvegarder immédiatement après initialisation
+      setImmediate(() => backupDatabase());
     });
   } else {
     console.log(`✅ Base OK (${row.count} utilisateurs)`);
@@ -64,8 +74,6 @@ function authenticate(req, res, next) {
 // ============================================================
 //  ROUTES PUBLIQUES
 // ============================================================
-
-// --- Login ---
 app.post('/api/auth/login', (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email et mot de passe requis' });
@@ -87,10 +95,10 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // ============================================================
-//  ROUTES D'ADMINISTRATION ET DE GÉNÉRAL (protégées)
+//  ROUTES PROTÉGÉES
 // ============================================================
 
-// --- Récupérer les cours accessibles ---
+// --- Récupérer les cours ---
 app.get('/api/courses', authenticate, (req, res) => {
   const isAdmin = req.user.role === 'admin';
   let sql = 'SELECT * FROM courses';
@@ -105,7 +113,7 @@ app.get('/api/courses', authenticate, (req, res) => {
   });
 });
 
-// --- Récupérer tous les étudiants ---
+// --- Récupérer les étudiants ---
 app.get('/api/students', authenticate, (req, res) => {
   const { courseId } = req.query;
   const isAdmin = req.user.role === 'admin';
@@ -121,17 +129,17 @@ app.get('/api/students', authenticate, (req, res) => {
   db.all(sql, params, (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(rows);
+    // Sauvegarde après lecture ? Non, pas nécessaire.
   });
 });
 
-// --- Mettre à jour un étudiant (payment_status, amount_paid) ---
+// --- Mettre à jour un étudiant ---
 app.put('/api/students/:id', authenticate, (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Réservé à l\'administrateur' });
   const { id } = req.params;
   const { payment_status, amount_paid } = req.body;
   console.log('📝 Mise à jour étudiant:', id, { payment_status, amount_paid });
 
-  // Construire la requête dynamiquement
   let fields = [];
   let values = [];
   if (payment_status !== undefined) {
@@ -154,6 +162,7 @@ app.put('/api/students/:id', authenticate, (req, res) => {
       return res.status(500).json({ error: err.message });
     }
     res.json({ success: true });
+    setImmediate(() => backupDatabase()); // Sauvegarde
   });
 });
 
@@ -168,6 +177,7 @@ app.delete('/api/students', authenticate, (req, res) => {
   db.run(`DELETE FROM students WHERE id IN (${placeholders})`, ids, function(err) {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ success: true, deleted: this.changes });
+    setImmediate(() => backupDatabase());
   });
 });
 
@@ -197,6 +207,7 @@ app.post('/api/attendance', authenticate, (req, res) => {
       function(err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ success: true, date });
+        setImmediate(() => backupDatabase());
       }
     );
   }
@@ -270,6 +281,7 @@ app.put('/api/courses/:id', authenticate, (req, res) => {
     db.run(`UPDATE courses SET ${field} = ? WHERE id = ?`, [value, id], function(err) {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ success: true });
+      setImmediate(() => backupDatabase());
     });
   }
 
@@ -293,6 +305,7 @@ app.post('/api/slots', authenticate, (req, res) => {
     db.run('INSERT INTO slots (courseId, date, time) VALUES (?, ?, ?)', [courseId, date, time || ''], function(err) {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ success: true, id: this.lastID });
+      setImmediate(() => backupDatabase());
     });
   }
 
@@ -318,6 +331,7 @@ app.delete('/api/slots/:id', authenticate, (req, res) => {
       db.run('DELETE FROM slots WHERE id = ?', [id], function(err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ success: true });
+        setImmediate(() => backupDatabase());
       });
     }
 
@@ -347,6 +361,7 @@ app.put('/api/slots/:id', authenticate, (req, res) => {
       db.run(`UPDATE slots SET ${field} = ? WHERE id = ?`, [value, id], function(err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ success: true });
+        setImmediate(() => backupDatabase());
       });
     }
 
@@ -371,6 +386,7 @@ app.post('/api/learners', authenticate, (req, res) => {
     db.run('INSERT INTO learners (courseId, name) VALUES (?, ?)', [courseId, name], function(err) {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ success: true, id: this.lastID });
+      setImmediate(() => backupDatabase());
     });
   }
 
@@ -396,6 +412,7 @@ app.delete('/api/learners/:id', authenticate, (req, res) => {
       db.run('DELETE FROM learners WHERE id = ?', [id], function(err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ success: true });
+        setImmediate(() => backupDatabase());
       });
     }
 
@@ -439,6 +456,7 @@ app.post('/api/courses', authenticate, (req, res) => {
     function(err) {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ success: true });
+      setImmediate(() => backupDatabase());
     }
   );
 });
@@ -450,6 +468,7 @@ app.delete('/api/courses/:id', authenticate, (req, res) => {
   db.run('DELETE FROM courses WHERE id = ?', [id], function(err) {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ success: true });
+    setImmediate(() => backupDatabase());
   });
 });
 
@@ -463,6 +482,7 @@ app.post('/api/students', authenticate, (req, res) => {
     function(err) {
       if (err) return res.status(500).json({ error: err.message });
       res.json({ success: true });
+      setImmediate(() => backupDatabase());
     }
   );
 });
@@ -474,6 +494,7 @@ app.delete('/api/students/:id', authenticate, (req, res) => {
   db.run('DELETE FROM students WHERE id = ?', [id], function(err) {
     if (err) return res.status(500).json({ error: err.message });
     res.json({ success: true });
+    setImmediate(() => backupDatabase());
   });
 });
 
@@ -506,6 +527,7 @@ app.post('/api/students/import', authenticate, upload.single('file'), (req, res)
         if (remaining === 0) {
           fs.unlinkSync(req.file.path);
           res.json({ success: true, imported: inserted, total: names.length });
+          setImmediate(() => backupDatabase());
         }
       }
     );
@@ -513,10 +535,7 @@ app.post('/api/students/import', authenticate, upload.single('file'), (req, res)
 });
 
 // ============================================================
-//  DÉMARRAGE
-// ============================================================
-// ============================================================
-//  ROUTE D'INITIALISATION MANUELLE (à supprimer après utilisation)
+//  ROUTE D'INITIALISATION MANUELLE (à supprimer après)
 // ============================================================
 const INIT_TOKEN = 'monTokenSecret123';
 
@@ -526,7 +545,7 @@ app.get('/init-db', (req, res) => {
 
   const dbPath = path.join(__dirname, 'db.sqlite');
   if (fs.existsSync(dbPath)) {
-    fs.unlinkSync(dbPath); // on supprime l'ancienne base
+    fs.unlinkSync(dbPath);
   }
 
   const scriptPath = path.join(__dirname, 'initDB.js');
@@ -537,10 +556,10 @@ app.get('/init-db', (req, res) => {
     }
     console.log(stdout);
     res.json({ message: 'Base de données initialisée avec succès !', output: stdout });
+    setImmediate(() => backupDatabase());
   });
 });
 
-// Route de debug pour vérifier les utilisateurs
 app.get('/debug-users', (req, res) => {
   const token = req.query.token;
   if (token !== INIT_TOKEN) return res.status(403).json({ error: 'Token invalide' });
@@ -554,6 +573,10 @@ app.get('/debug-users', (req, res) => {
     res.json(result);
   });
 });
+
+// ============================================================
+//  DÉMARRAGE
+// ============================================================
 app.listen(PORT, () => {
   console.log(`🚀 Serveur Timsirin démarré sur http://localhost:${PORT}`);
 });
