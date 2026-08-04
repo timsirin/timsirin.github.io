@@ -401,6 +401,19 @@ app.get('/init-db', (req, res) => {
     res.json({ message: 'Base de données initialisée avec succès !', output: stdout });
   });
 });
+// Route de debug (à supprimer après)
+app.get('/debug-users', (req, res) => {
+  db.all('SELECT email, password_hash FROM users', (err, rows) => {
+    if (err) {
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(rows.map(r => ({
+      email: r.email,
+      hash_length: r.password_hash ? r.password_hash.length : 0,
+      hash_start: r.password_hash ? r.password_hash.substring(0, 20) : null
+    })));
+  });
+});
 // --- Démarrer ---
 app.listen(PORT, () => {
   console.log(`🚀 Serveur Timsirin démarré sur http://localhost:${PORT}`);
