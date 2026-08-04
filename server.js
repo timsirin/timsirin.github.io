@@ -13,10 +13,38 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'timsirinSecretKey';
 
-// Middleware
+// ============================================================
+//  MIDDLEWARE
+// ============================================================
 app.use(cors());
 app.use(express.json());
 const upload = multer({ dest: 'uploads/' });
+
+// ============================================================
+//  INITIALISATION AUTOMATIQUE DE LA BASE (si vide)
+// ============================================================
+db.get('SELECT COUNT(*) as count FROM users', (err, row) => {
+  if (err) {
+    console.error('❌ Erreur lors de la vérification de la table users:', err.message);
+    return;
+  }
+
+  if (row.count === 0) {
+    console.log('🔄 Base de données vide. Initialisation automatique en cours...');
+    const scriptPath = path.join(__dirname, 'initDB.js');
+    exec(`node ${scriptPath}`, (error, stdout, stderr) => {
+      if (error) {
+        console.error('❌ Erreur lors de l\'initialisation de la base:', error);
+        console.error('stderr:', stderr);
+        return;
+      }
+      console.log('✅ Base de données initialisée avec succès !');
+      console.log(stdout);
+    });
+  } else {
+    console.log(`✅ Base de données déjà initialisée (${row.count} utilisateurs trouvés).`);
+  }
+});
 
 // ============================================================
 //  AUTHENTIFICATION
@@ -60,19 +88,17 @@ app.post('/api/auth/login', (req, res) => {
 });
 
 // ============================================================
-//  ROUTES D'INITIALISATION (protégées par token)
+//  ROUTES D'INITIALISATION MANUELLE (protégées par token)
 // ============================================================
 const INIT_TOKEN = 'monTokenSecret123';
 
-// --- Initialiser la base de données ---
+// --- Initialiser la base de données (manuel) ---
 app.get('/init-db', (req, res) => {
   const token = req.query.token;
   if (token !== INIT_TOKEN) return res.status(403).json({ error: 'Token invalide' });
 
-  // Vérifier si la base existe déjà
-  const dbPath = process.env.DATABASE_PATH || path.join(__dirname, 'db.sqlite');
+  const dbPath = path.join(__dirname, 'db.sqlite');
   if (fs.existsSync(dbPath)) {
-    // Supprimer l'ancienne base pour une réinitialisation propre
     fs.unlinkSync(dbPath);
   }
 
