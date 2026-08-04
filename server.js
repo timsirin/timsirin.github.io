@@ -577,6 +577,74 @@ app.get('/debug-users', (req, res) => {
 // ============================================================
 //  DÉMARRAGE
 // ============================================================
+// ============================================================
+//  AJOUT D'UN ENSEIGNANT (protégé par token)
+// ============================================================
+app.post('/admin/add-teacher', async (req, res) => {
+  const token = req.query.token;
+  if (token !== '2976AllianceTmazight2026') {
+    return res.status(403).json({ error: 'Token invalide' });
+  }
+
+  const { email, password, name, courseId } = req.body;
+  if (!email || !password || !name || !courseId) {
+    return res.status(400).json({ error: 'Tous les champs sont requis : email, password, name, courseId' });
+  }
+
+  try {
+    // Vérifier que le cours existe
+    const course = await new Promise((resolve, reject) => {
+      db.get('SELECT * FROM courses WHERE id = ?', [courseId], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+    if (!course) return res.status(404).json({ error: 'Cours introuvable' });
+
+    // Vérifier si l'email est déjà utilisé
+    const existing = await new Promise((resolve, reject) => {
+      db.get('SELECT * FROM users WHERE email = ?', [email], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+    if (existing) return res.status(409).json({ error: 'Cet email est déjà utilisé' });
+
+    // Hacher le mot de passe
+    const hash = await bcrypt.hash(password, 10);
+
+    // Insérer l'utilisateur
+    await new Promise((resolve, reject) => {
+      db.run('INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, ?)',
+        [email, hash, name, 'teacher'],
+        function(err) {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+
+    // Mettre à jour le cours (associer l'enseignant)
+    await new Promise((resolve, reject) => {
+      db.run('UPDATE courses SET teacher = ?, teacherEmail = ? WHERE id = ?',
+        [name, email, courseId],
+        function(err) {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+
+    res.json({ success: true, message: `Enseignant ${name} ajouté et associé au cours ${course.title}` });
+
+    // Sauvegarder la base après modification
+    setImmediate(() => backupDatabase());
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
 app.listen(PORT, () => {
   console.log(`🚀 Serveur Timsirin démarré sur http://localhost:${PORT}`);
 });
