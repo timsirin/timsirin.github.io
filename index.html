@@ -1415,14 +1415,32 @@
         // ================================================================
         async function handleLogin(e) {
             e.preventDefault();
-            const email = document.getElementById('loginEmail').value.trim();
-            const password = document.getElementById('loginPassword').value.trim();
-            console.log('🔐 Tentative de connexion avec', email, password);
+             // Récupérer les valeurs et les afficher dans la console
+            const email = document.getElementById('loginEmail').value;
+            const password = document.getElementById('loginPassword').value;
             try {
-                const data = await fetchWithAuth('/auth/login', {
+            console.log('📧 Email brut:', JSON.stringify(email));
+            console.log('🔑 Mot de passe brut:', JSON.stringify(password));
+
+            // Nettoyer les espaces
+            const emailTrim = email.trim();
+            const passwordTrim = password.trim();
+            console.log('📧 Email nettoyé:', JSON.stringify(emailTrim));
+            console.log('🔑 Mot de passe nettoyé:', JSON.stringify(passwordTrim));
+             try {
+                const response = await fetch(`${API_BASE}/auth/login`, {
                     method: 'POST',
-                    body: JSON.stringify({ email, password })
-                });
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: emailTrim, password: passwordTrim })
+                   });
+                const data = await response.json();
+                console.log('📦 Réponse serveur:', data);
+                if (!response.ok) {
+                    document.getElementById('loginError').textContent = data.error || 'Erreur';
+                    document.getElementById('loginError').classList.remove('hidden');
+                    return; 
+                }
+
                 localStorage.setItem('jwt', data.token);
                 localStorage.setItem('currentUser', JSON.stringify(data.user));
                 currentUser = data.user;
