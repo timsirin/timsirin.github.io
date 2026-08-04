@@ -375,7 +375,32 @@ app.post('/api/students/import', authenticate, upload.single('file'), (req, res)
     );
   });
 });
+// ============================================================
+//  ROUTE D'INITIALISATION DE LA BASE DE DONNÉES (une seule fois)
+// ============================================================
+const { exec } = require('child_process');
+const path = require('path');
 
+// Route protégée par un token simple (pour éviter les accès non autorisés)
+const INIT_TOKEN = 'monTokenSecret123'; // Changez-le par un mot de passe fort
+
+app.get('/init-db', (req, res) => {
+  const token = req.query.token;
+  if (token !== INIT_TOKEN) {
+    return res.status(403).json({ error: 'Token invalide' });
+  }
+
+  // Exécuter le script initDB.js
+  const scriptPath = path.join(__dirname, 'initDB.js');
+  exec(`node ${scriptPath}`, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`Erreur : ${error}`);
+      return res.status(500).json({ error: 'Échec de l\'initialisation', details: stderr });
+    }
+    console.log(stdout);
+    res.json({ message: 'Base de données initialisée avec succès !', output: stdout });
+  });
+});
 // --- Démarrer ---
 app.listen(PORT, () => {
   console.log(`🚀 Serveur Timsirin démarré sur http://localhost:${PORT}`);
