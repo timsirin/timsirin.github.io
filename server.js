@@ -515,6 +515,45 @@ app.post('/api/students/import', authenticate, upload.single('file'), (req, res)
 // ============================================================
 //  DÉMARRAGE
 // ============================================================
+// ============================================================
+//  ROUTE D'INITIALISATION MANUELLE (à supprimer après utilisation)
+// ============================================================
+const INIT_TOKEN = 'monTokenSecret123';
+
+app.get('/init-db', (req, res) => {
+  const token = req.query.token;
+  if (token !== INIT_TOKEN) return res.status(403).json({ error: 'Token invalide' });
+
+  const dbPath = path.join(__dirname, 'db.sqlite');
+  if (fs.existsSync(dbPath)) {
+    fs.unlinkSync(dbPath); // on supprime l'ancienne base
+  }
+
+  const scriptPath = path.join(__dirname, 'initDB.js');
+  exec(`node ${scriptPath}`, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`Erreur : ${error}`);
+      return res.status(500).json({ error: 'Échec de l\'initialisation', details: stderr });
+    }
+    console.log(stdout);
+    res.json({ message: 'Base de données initialisée avec succès !', output: stdout });
+  });
+});
+
+// Route de debug pour vérifier les utilisateurs
+app.get('/debug-users', (req, res) => {
+  const token = req.query.token;
+  if (token !== INIT_TOKEN) return res.status(403).json({ error: 'Token invalide' });
+  db.all('SELECT email, password_hash FROM users', (err, rows) => {
+    if (err) return res.status(500).json({ error: err.message });
+    const result = rows.map(r => ({
+      email: r.email,
+      hash_length: r.password_hash ? r.password_hash.length : 0,
+      hash_start: r.password_hash ? r.password_hash.substring(0, 20) : null
+    }));
+    res.json(result);
+  });
+});
 app.listen(PORT, () => {
   console.log(`🚀 Serveur Timsirin démarré sur http://localhost:${PORT}`);
 });
