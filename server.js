@@ -31,29 +31,29 @@ const upload = multer({ dest: 'uploads/' });
 // ============================================================
 //  INITIALISATION AUTOMATIQUE (si vide)
 // ============================================================
-db.get('SELECT COUNT(*) as count FROM users', (err, row) => {
-  if (err) {
+(async () => {
+  try {
+    const row = await db.get('SELECT COUNT(*) as count FROM users');
+    if (row.count === 0) {
+      console.log('🔄 Base vide, initialisation...');
+      const scriptPath = path.join(__dirname, 'initDB.js');
+      exec(`node ${scriptPath}`, (error, stdout, stderr) => {
+        if (error) {
+          console.error('❌ Erreur init:', error);
+          console.error('stderr:', stderr);
+          return;
+        }
+        console.log('✅ Base initialisée avec succès !');
+        console.log(stdout);
+        setImmediate(() => backupDatabase());
+      });
+    } else {
+      console.log(`✅ Base OK (${row.count} utilisateurs)`);
+    }
+  } catch (err) {
     console.error('❌ Erreur vérification users:', err.message);
-    return;
   }
-  if (row.count === 0) {
-    console.log('🔄 Base vide, initialisation...');
-    const scriptPath = path.join(__dirname, 'initDB.js');
-    exec(`node ${scriptPath}`, (error, stdout, stderr) => {
-      if (error) {
-        console.error('❌ Erreur init:', error);
-        console.error('stderr:', stderr);
-        return;
-      }
-      console.log('✅ Base initialisée avec succès !');
-      console.log(stdout);
-      // Sauvegarder immédiatement après initialisation
-      setImmediate(() => backupDatabase());
-    });
-  } else {
-    console.log(`✅ Base OK (${row.count} utilisateurs)`);
-  }
-});
+})();
 
 // ============================================================
 //  MIDDLEWARE D'AUTHENTIFICATION
@@ -74,12 +74,14 @@ function authenticate(req, res, next) {
 // ============================================================
 //  ROUTES PUBLIQUES
 // ============================================================
-app.post('/api/auth/login', (req, res) => {
+
+// --- Login ---
+app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Email et mot de passe requis' });
 
-  db.get('SELECT * FROM users WHERE email = ?', [email], async (err, user) => {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    const user = await db.get('SELECT * FROM users WHERE email = $1', [email]);
     if (!user) return res.status(401).json({ error: 'Identifiants incorrects' });
 
     const match = await bcrypt.compare(password, user.password_hash);
@@ -91,7 +93,10 @@ app.post('/api/auth/login', (req, res) => {
       { expiresIn: '24h' }
     );
     res.json({ token, user: { id: user.id, email: user.email, name: user.name, role: user.role } });
-  });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ============================================================
@@ -99,408 +104,428 @@ app.post('/api/auth/login', (req, res) => {
 // ============================================================
 
 // --- Récupérer les cours ---
-app.get('/api/courses', authenticate, (req, res) => {
-  const isAdmin = req.user.role === 'admin';
-  let sql = 'SELECT * FROM courses';
-  const params = [];
-  if (!isAdmin) {
-    sql += ' WHERE teacherEmail = ?';
-    params.push(req.user.email);
-  }
-  db.all(sql, params, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+app.get('/api/courses', authenticate, async (req, res) => {
+  try {
+    const isAdmin = req.user.role === 'admin';
+    let sql = 'SELECT * FROM courses';
+    const params = [];
+    if (!isAdmin) {
+      sql += ' WHERE teacherEmail = $1';
+      params.push(req.user.email);
+    }
+    const rows = await db.all(sql, params);
     res.json(rows);
-  });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Récupérer les étudiants ---
-app.get('/api/students', authenticate, (req, res) => {
-  const { courseId } = req.query;
-  const isAdmin = req.user.role === 'admin';
-  let sql = 'SELECT * FROM students';
-  const params = [];
-  if (courseId) {
-    sql += ' WHERE courseId = ?';
-    params.push(courseId);
-  } else if (!isAdmin) {
-    sql += ' WHERE courseId IN (SELECT id FROM courses WHERE teacherEmail = ?)';
-    params.push(req.user.email);
-  }
-  db.all(sql, params, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+app.get('/api/students', authenticate, async (req, res) => {
+  try {
+    const { courseId } = req.query;
+    const isAdmin = req.user.role === 'admin';
+    let sql = 'SELECT * FROM students';
+    const params = [];
+    if (courseId) {
+      sql += ' WHERE courseId = $1';
+      params.push(courseId);
+    } else if (!isAdmin) {
+      sql += ' WHERE courseId IN (SELECT id FROM courses WHERE teacherEmail = $1)';
+      params.push(req.user.email);
+    }
+    const rows = await db.all(sql, params);
     res.json(rows);
-    // Sauvegarde après lecture ? Non, pas nécessaire.
-  });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
-// --- Mettre à jour un étudiant ---
-app.put('/api/students/:id', authenticate, (req, res) => {
+// --- Mettre à jour un étudiant (payment_status, amount_paid) ---
+app.put('/api/students/:id', authenticate, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Réservé à l\'administrateur' });
   const { id } = req.params;
   const { payment_status, amount_paid } = req.body;
   console.log('📝 Mise à jour étudiant:', id, { payment_status, amount_paid });
 
-  let fields = [];
-  let values = [];
-  if (payment_status !== undefined) {
-    fields.push('payment_status = ?');
-    values.push(payment_status);
-  }
-  if (amount_paid !== undefined) {
-    fields.push('amount_paid = ?');
-    values.push(parseFloat(amount_paid));
-  }
-  if (fields.length === 0) {
-    return res.status(400).json({ error: 'Aucune donnée à mettre à jour' });
-  }
-  values.push(id);
+  try {
+    let fields = [];
+    let values = [];
+    let paramIndex = 1;
 
-  const sql = `UPDATE students SET ${fields.join(', ')} WHERE id = ?`;
-  db.run(sql, values, function(err) {
-    if (err) {
-      console.error('❌ Erreur UPDATE:', err.message);
-      return res.status(500).json({ error: err.message });
+    if (payment_status !== undefined) {
+      fields.push(`payment_status = $${paramIndex}`);
+      values.push(payment_status);
+      paramIndex++;
     }
+    if (amount_paid !== undefined) {
+      fields.push(`amount_paid = $${paramIndex}`);
+      values.push(parseFloat(amount_paid));
+      paramIndex++;
+    }
+    if (fields.length === 0) {
+      return res.status(400).json({ error: 'Aucune donnée à mettre à jour' });
+    }
+
+    values.push(id);
+    const sql = `UPDATE students SET ${fields.join(', ')} WHERE id = $${paramIndex}`;
+
+    await db.run(sql, values);
     res.json({ success: true });
-    setImmediate(() => backupDatabase()); // Sauvegarde
-  });
+    setImmediate(() => backupDatabase());
+  } catch (err) {
+    console.error('❌ Erreur UPDATE:', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Supprimer plusieurs étudiants ---
-app.delete('/api/students', authenticate, (req, res) => {
+app.delete('/api/students', authenticate, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Réservé à l\'administrateur' });
   const { ids } = req.body;
   if (!ids || !Array.isArray(ids) || ids.length === 0) {
     return res.status(400).json({ error: 'Aucun ID fourni' });
   }
-  const placeholders = ids.map(() => '?').join(',');
-  db.run(`DELETE FROM students WHERE id IN (${placeholders})`, ids, function(err) {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ success: true, deleted: this.changes });
+
+  try {
+    const placeholders = ids.map((_, i) => `$${i + 1}`).join(',');
+    const result = await db.run(`DELETE FROM students WHERE id IN (${placeholders})`, ids);
+    res.json({ success: true, deleted: result.rowCount });
     setImmediate(() => backupDatabase());
-  });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Statistiques financières ---
-app.get('/api/stats/financial', authenticate, (req, res) => {
+app.get('/api/stats/financial', authenticate, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Réservé à l\'administrateur' });
-  db.get(`SELECT 
-    SUM(amount_paid) as total_encaisse, 
-    SUM(CASE WHEN amount_paid > 120 THEN amount_paid - 120 ELSE 0 END) as total_dons 
-    FROM students`, (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json({ total_encaisse: row.total_encaisse || 0, total_dons: row.total_dons || 0 });
-  });
+
+  try {
+    const row = await db.get(`
+      SELECT 
+        SUM(amount_paid) as total_encaisse, 
+        SUM(CASE WHEN amount_paid > 120 THEN amount_paid - 120 ELSE 0 END) as total_dons 
+      FROM students
+    `);
+    res.json({
+      total_encaisse: row.total_encaisse || 0,
+      total_dons: row.total_dons || 0
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Marquer une présence ---
-app.post('/api/attendance', authenticate, (req, res) => {
+app.post('/api/attendance', authenticate, async (req, res) => {
   const { studentId, courseId, status } = req.body;
   const date = new Date().toISOString().slice(0, 10);
 
-  function upsert() {
+  try {
     const id = 'att_' + Date.now() + '_' + studentId;
-    db.run(
-      `INSERT OR REPLACE INTO attendance (id, studentId, courseId, date, status)
-       VALUES (?, ?, ?, ?, ?)`,
-      [id, studentId, courseId, date, status],
-      function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ success: true, date });
-        setImmediate(() => backupDatabase());
-      }
+    await db.run(
+      `INSERT INTO attendance (id, studentId, courseId, date, status) 
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (id) DO UPDATE SET status = $5`,
+      [id, studentId, courseId, date, status]
     );
-  }
-
-  if (req.user.role === 'admin') {
-    upsert();
-  } else {
-    db.get('SELECT * FROM courses WHERE id = ? AND teacherEmail = ?', [courseId, req.user.email], (err, course) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!course) return res.status(403).json({ error: 'Accès non autorisé' });
-      upsert();
-    });
+    res.json({ success: true, date });
+    setImmediate(() => backupDatabase());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
 // --- Récupérer les présences ---
-app.get('/api/attendance', authenticate, (req, res) => {
-  const { courseId, month } = req.query;
-  let sql = 'SELECT * FROM attendance';
-  const params = [];
-  const conditions = [];
-  if (courseId) { conditions.push('courseId = ?'); params.push(courseId); }
-  if (month) { conditions.push('date LIKE ?'); params.push(month + '%'); }
-  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
-  if (req.user.role !== 'admin') {
-    sql += (conditions.length ? ' AND' : ' WHERE') + ' courseId IN (SELECT id FROM courses WHERE teacherEmail = ?)';
-    params.push(req.user.email);
-  }
-  db.all(sql, params, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+app.get('/api/attendance', authenticate, async (req, res) => {
+  try {
+    const { courseId, month } = req.query;
+    let sql = 'SELECT * FROM attendance';
+    const params = [];
+    const conditions = [];
+    let paramIndex = 1;
+
+    if (courseId) {
+      conditions.push(`courseId = $${paramIndex}`);
+      params.push(courseId);
+      paramIndex++;
+    }
+    if (month) {
+      conditions.push(`date LIKE $${paramIndex}`);
+      params.push(month + '%');
+      paramIndex++;
+    }
+
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+
+    if (req.user.role !== 'admin') {
+      sql += (conditions.length ? ' AND' : ' WHERE') +
+        ` courseId IN (SELECT id FROM courses WHERE teacherEmail = $${paramIndex})`;
+      params.push(req.user.email);
+    }
+
+    const rows = await db.all(sql, params);
     res.json(rows);
-  });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Planning complet ---
-app.get('/api/planning', authenticate, (req, res) => {
-  const isAdmin = req.user.role === 'admin';
-  let sql = 'SELECT * FROM courses';
-  const params = [];
-  if (!isAdmin) { sql += ' WHERE teacherEmail = ?'; params.push(req.user.email); }
-  db.all(sql, params, (err, courses) => {
-    if (err) return res.status(500).json({ error: err.message });
+app.get('/api/planning', authenticate, async (req, res) => {
+  try {
+    const isAdmin = req.user.role === 'admin';
+    let sql = 'SELECT * FROM courses';
+    const params = [];
+
+    if (!isAdmin) {
+      sql += ' WHERE teacherEmail = $1';
+      params.push(req.user.email);
+    }
+
+    const courses = await db.all(sql, params);
     const result = [];
-    let remaining = courses.length;
-    if (remaining === 0) return res.json([]);
-    courses.forEach(course => {
-      db.all('SELECT * FROM slots WHERE courseId = ?', [course.id], (errSlots, slots) => {
-        db.all('SELECT * FROM learners WHERE courseId = ?', [course.id], (errLearners, learners) => {
-          if (errSlots || errLearners) return res.status(500).json({ error: errSlots?.message || errLearners?.message });
-          result.push({
-            ...course,
-            slots: slots.map(s => ({ date: s.date, time: s.time, id: s.id })),
-            learners: learners.map(l => l.name)
-          });
-          remaining--;
-          if (remaining === 0) res.json(result);
-        });
+
+    for (const course of courses) {
+      const slots = await db.all('SELECT * FROM slots WHERE courseId = $1', [course.id]);
+      const learners = await db.all('SELECT * FROM learners WHERE courseId = $1', [course.id]);
+
+      result.push({
+        ...course,
+        slots: slots.map(s => ({ date: s.date, time: s.time, id: s.id })),
+        learners: learners.map(l => l.name)
       });
-    });
-  });
+    }
+
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Mettre à jour un champ d'un cours ---
-app.put('/api/courses/:id', authenticate, (req, res) => {
+app.put('/api/courses/:id', authenticate, async (req, res) => {
   const { id } = req.params;
   const { field, value } = req.body;
   const allowed = ['teacher', 'public', 'zoomLink', 'schedule', 'teacherEmail'];
   if (!allowed.includes(field)) return res.status(400).json({ error: 'Champ invalide' });
 
-  function update() {
-    db.run(`UPDATE courses SET ${field} = ? WHERE id = ?`, [value, id], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ success: true });
-      setImmediate(() => backupDatabase());
-    });
-  }
-
-  if (req.user.role === 'admin') {
-    update();
-  } else {
-    db.get('SELECT * FROM courses WHERE id = ? AND teacherEmail = ?', [id, req.user.email], (err, course) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!course) return res.status(403).json({ error: 'Non autorisé' });
-      update();
-    });
+  try {
+    await db.run(`UPDATE courses SET ${field} = $1 WHERE id = $2`, [value, id]);
+    res.json({ success: true });
+    setImmediate(() => backupDatabase());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
 // --- Ajouter un slot ---
-app.post('/api/slots', authenticate, (req, res) => {
+app.post('/api/slots', authenticate, async (req, res) => {
   const { courseId, date, time } = req.body;
   if (!courseId || !date) return res.status(400).json({ error: 'courseId et date requis' });
 
-  function insert() {
-    db.run('INSERT INTO slots (courseId, date, time) VALUES (?, ?, ?)', [courseId, date, time || ''], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ success: true, id: this.lastID });
-      setImmediate(() => backupDatabase());
-    });
-  }
-
-  if (req.user.role === 'admin') {
-    insert();
-  } else {
-    db.get('SELECT * FROM courses WHERE id = ? AND teacherEmail = ?', [courseId, req.user.email], (err, course) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!course) return res.status(403).json({ error: 'Non autorisé' });
-      insert();
-    });
+  try {
+    const result = await db.run(
+      'INSERT INTO slots (courseId, date, time) VALUES ($1, $2, $3)',
+      [courseId, date, time || '']
+    );
+    res.json({ success: true, id: result.rows?.[0]?.id || Date.now() });
+    setImmediate(() => backupDatabase());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
 // --- Supprimer un slot ---
-app.delete('/api/slots/:id', authenticate, (req, res) => {
+app.delete('/api/slots/:id', authenticate, async (req, res) => {
   const { id } = req.params;
-  db.get('SELECT courseId FROM slots WHERE id = ?', [id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
+
+  try {
+    const row = await db.get('SELECT courseId FROM slots WHERE id = $1', [id]);
     if (!row) return res.status(404).json({ error: 'Slot introuvable' });
 
-    function del() {
-      db.run('DELETE FROM slots WHERE id = ?', [id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ success: true });
-        setImmediate(() => backupDatabase());
-      });
-    }
-
-    if (req.user.role === 'admin') {
-      del();
-    } else {
-      db.get('SELECT * FROM courses WHERE id = ? AND teacherEmail = ?', [row.courseId, req.user.email], (err2, course) => {
-        if (err2) return res.status(500).json({ error: err2.message });
-        if (!course) return res.status(403).json({ error: 'Non autorisé' });
-        del();
-      });
-    }
-  });
+    await db.run('DELETE FROM slots WHERE id = $1', [id]);
+    res.json({ success: true });
+    setImmediate(() => backupDatabase());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Mettre à jour un slot (PUT) ---
-app.put('/api/slots/:id', authenticate, (req, res) => {
+app.put('/api/slots/:id', authenticate, async (req, res) => {
   const { id } = req.params;
   const { field, value } = req.body;
   if (!['date', 'time'].includes(field)) return res.status(400).json({ error: 'Champ invalide' });
 
-  db.get('SELECT courseId FROM slots WHERE id = ?', [id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
+  try {
+    const row = await db.get('SELECT courseId FROM slots WHERE id = $1', [id]);
     if (!row) return res.status(404).json({ error: 'Slot introuvable' });
 
-    function update() {
-      db.run(`UPDATE slots SET ${field} = ? WHERE id = ?`, [value, id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ success: true });
-        setImmediate(() => backupDatabase());
-      });
-    }
-
-    if (req.user.role === 'admin') {
-      update();
-    } else {
-      db.get('SELECT * FROM courses WHERE id = ? AND teacherEmail = ?', [row.courseId, req.user.email], (err2, course) => {
-        if (err2) return res.status(500).json({ error: err2.message });
-        if (!course) return res.status(403).json({ error: 'Non autorisé' });
-        update();
-      });
-    }
-  });
+    await db.run(`UPDATE slots SET ${field} = $1 WHERE id = $2`, [value, id]);
+    res.json({ success: true });
+    setImmediate(() => backupDatabase());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Ajouter un apprenant (learner) ---
-app.post('/api/learners', authenticate, (req, res) => {
+app.post('/api/learners', authenticate, async (req, res) => {
   const { courseId, name } = req.body;
   if (!courseId || !name) return res.status(400).json({ error: 'courseId et name requis' });
 
-  function insert() {
-    db.run('INSERT INTO learners (courseId, name) VALUES (?, ?)', [courseId, name], function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ success: true, id: this.lastID });
-      setImmediate(() => backupDatabase());
-    });
-  }
-
-  if (req.user.role === 'admin') {
-    insert();
-  } else {
-    db.get('SELECT * FROM courses WHERE id = ? AND teacherEmail = ?', [courseId, req.user.email], (err, course) => {
-      if (err) return res.status(500).json({ error: err.message });
-      if (!course) return res.status(403).json({ error: 'Non autorisé' });
-      insert();
-    });
+  try {
+    const result = await db.run(
+      'INSERT INTO learners (courseId, name) VALUES ($1, $2)',
+      [courseId, name]
+    );
+    res.json({ success: true, id: result.rows?.[0]?.id || Date.now() });
+    setImmediate(() => backupDatabase());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
   }
 });
 
 // --- Supprimer un apprenant (learner) ---
-app.delete('/api/learners/:id', authenticate, (req, res) => {
+app.delete('/api/learners/:id', authenticate, async (req, res) => {
   const { id } = req.params;
-  db.get('SELECT courseId FROM learners WHERE id = ?', [id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
+
+  try {
+    const row = await db.get('SELECT courseId FROM learners WHERE id = $1', [id]);
     if (!row) return res.status(404).json({ error: 'Apprenant introuvable' });
 
-    function del() {
-      db.run('DELETE FROM learners WHERE id = ?', [id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ success: true });
-        setImmediate(() => backupDatabase());
-      });
-    }
-
-    if (req.user.role === 'admin') {
-      del();
-    } else {
-      db.get('SELECT * FROM courses WHERE id = ? AND teacherEmail = ?', [row.courseId, req.user.email], (err2, course) => {
-        if (err2) return res.status(500).json({ error: err2.message });
-        if (!course) return res.status(403).json({ error: 'Non autorisé' });
-        del();
-      });
-    }
-  });
+    await db.run('DELETE FROM learners WHERE id = $1', [id]);
+    res.json({ success: true });
+    setImmediate(() => backupDatabase());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- Récupérer les learners (avec filtres) ---
-app.get('/api/learners', authenticate, (req, res) => {
-  const { courseId, name } = req.query;
-  let sql = 'SELECT * FROM learners';
-  const params = [];
-  const conditions = [];
-  if (courseId) { conditions.push('courseId = ?'); params.push(courseId); }
-  if (name) { conditions.push('name = ?'); params.push(name); }
-  if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
-  db.all(sql, params, (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
+app.get('/api/learners', authenticate, async (req, res) => {
+  try {
+    const { courseId, name } = req.query;
+    let sql = 'SELECT * FROM learners';
+    const params = [];
+    const conditions = [];
+    let paramIndex = 1;
+
+    if (courseId) {
+      conditions.push(`courseId = $${paramIndex}`);
+      params.push(courseId);
+      paramIndex++;
+    }
+    if (name) {
+      conditions.push(`name = $${paramIndex}`);
+      params.push(name);
+      paramIndex++;
+    }
+
+    if (conditions.length) sql += ' WHERE ' + conditions.join(' AND ');
+    const rows = await db.all(sql, params);
     res.json(rows);
-  });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- (Admin) Ajouter un cours ---
-app.post('/api/courses', authenticate, (req, res) => {
+app.post('/api/courses', authenticate, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Réservé à l\'administrateur' });
+
   const { id, title, teacher, teacherEmail, schedule, public, zoomLink } = req.body;
   if (!id || !title || !teacher || !teacherEmail) {
     return res.status(400).json({ error: 'Champs requis manquants' });
   }
-  db.run(
-    'INSERT INTO courses (id, title, teacher, teacherEmail, schedule, public, zoomLink) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [id, title, teacher, teacherEmail, schedule || '', public || 'adultes', zoomLink || ''],
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ success: true });
-      setImmediate(() => backupDatabase());
-    }
-  );
+
+  try {
+    await db.run(
+      `INSERT INTO courses (id, title, teacher, teacherEmail, schedule, public, zoomLink) 
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [id, title, teacher, teacherEmail, schedule || '', public || 'adultes', zoomLink || '']
+    );
+    res.json({ success: true });
+    setImmediate(() => backupDatabase());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- (Admin) Supprimer un cours ---
-app.delete('/api/courses/:id', authenticate, (req, res) => {
+app.delete('/api/courses/:id', authenticate, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Réservé à l\'administrateur' });
+
   const { id } = req.params;
-  db.run('DELETE FROM courses WHERE id = ?', [id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
+
+  try {
+    await db.run('DELETE FROM courses WHERE id = $1', [id]);
     res.json({ success: true });
     setImmediate(() => backupDatabase());
-  });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- (Admin) Ajouter un étudiant ---
-app.post('/api/students', authenticate, (req, res) => {
+app.post('/api/students', authenticate, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Réservé à l\'administrateur' });
+
   const { id, name, email, courseId } = req.body;
   if (!id || !name || !email || !courseId) return res.status(400).json({ error: 'Champs requis' });
-  db.run('INSERT INTO students (id, name, email, courseId, payment_status, amount_paid) VALUES (?, ?, ?, ?, ?, ?)',
-    [id, name, email, courseId, 'unpaid', 0],
-    function(err) {
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ success: true });
-      setImmediate(() => backupDatabase());
-    }
-  );
+
+  try {
+    await db.run(
+      `INSERT INTO students (id, name, email, courseId, payment_status, amount_paid) 
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [id, name, email, courseId, 'unpaid', 0]
+    );
+    res.json({ success: true });
+    setImmediate(() => backupDatabase());
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- (Admin) Supprimer un étudiant (unique) ---
-app.delete('/api/students/:id', authenticate, (req, res) => {
+app.delete('/api/students/:id', authenticate, async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Réservé à l\'administrateur' });
+
   const { id } = req.params;
-  db.run('DELETE FROM students WHERE id = ?', [id], function(err) {
-    if (err) return res.status(500).json({ error: err.message });
+
+  try {
+    await db.run('DELETE FROM students WHERE id = $1', [id]);
     res.json({ success: true });
     setImmediate(() => backupDatabase());
-  });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // --- (Admin) Importer des apprenants depuis un fichier CSV ---
-app.post('/api/students/import', authenticate, upload.single('file'), (req, res) => {
+app.post('/api/students/import', authenticate, upload.single('file'), async (req, res) => {
   if (req.user.role !== 'admin') return res.status(403).json({ error: 'Réservé à l\'administrateur' });
+
   const { courseId } = req.body;
   if (!courseId) return res.status(400).json({ error: 'courseId requis' });
   if (!req.file) return res.status(400).json({ error: 'Aucun fichier uploadé' });
@@ -515,74 +540,36 @@ app.post('/api/students/import', authenticate, upload.single('file'), (req, res)
   }
 
   let inserted = 0;
-  let remaining = names.length;
 
-  names.forEach(name => {
-    const id = 's_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
-    db.run('INSERT INTO students (id, name, email, courseId, payment_status, amount_paid) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, name, '', courseId, 'unpaid', 0],
-      function(err) {
-        if (!err) inserted++;
-        remaining--;
-        if (remaining === 0) {
-          fs.unlinkSync(req.file.path);
-          res.json({ success: true, imported: inserted, total: names.length });
-          setImmediate(() => backupDatabase());
-        }
-      }
-    );
-  });
-});
-
-// ============================================================
-//  ROUTE D'INITIALISATION MANUELLE (à supprimer après)
-// ============================================================
-const INIT_TOKEN = 'monTokenSecret123';
-
-app.get('/init-db', (req, res) => {
-  const token = req.query.token;
-  if (token !== INIT_TOKEN) return res.status(403).json({ error: 'Token invalide' });
-
-  const dbPath = path.join(__dirname, 'db.sqlite');
-  if (fs.existsSync(dbPath)) {
-    fs.unlinkSync(dbPath);
-  }
-
-  const scriptPath = path.join(__dirname, 'initDB.js');
-  exec(`node ${scriptPath}`, (error, stdout, stderr) => {
-    if (error) {
-      console.error(`Erreur : ${error}`);
-      return res.status(500).json({ error: 'Échec de l\'initialisation', details: stderr });
+  try {
+    for (const name of names) {
+      const id = 's_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+      await db.run(
+        `INSERT INTO students (id, name, email, courseId, payment_status, amount_paid) 
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [id, name, '', courseId, 'unpaid', 0]
+      );
+      inserted++;
     }
-    console.log(stdout);
-    res.json({ message: 'Base de données initialisée avec succès !', output: stdout });
+
+    fs.unlinkSync(req.file.path);
+    res.json({ success: true, imported: inserted, total: names.length });
     setImmediate(() => backupDatabase());
-  });
-});
-
-app.get('/debug-users', (req, res) => {
-  const token = req.query.token;
-  if (token !== INIT_TOKEN) return res.status(403).json({ error: 'Token invalide' });
-  db.all('SELECT email, password_hash FROM users', (err, rows) => {
-    if (err) return res.status(500).json({ error: err.message });
-    const result = rows.map(r => ({
-      email: r.email,
-      hash_length: r.password_hash ? r.password_hash.length : 0,
-      hash_start: r.password_hash ? r.password_hash.substring(0, 20) : null
-    }));
-    res.json(result);
-  });
+  } catch (err) {
+    console.error(err);
+    fs.unlinkSync(req.file.path);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ============================================================
-//  DÉMARRAGE
+//  AJOUT D'UN ENSEIGNANT (route protégée par token)
 // ============================================================
-// ============================================================
-//  AJOUT D'UN ENSEIGNANT (protégé par token)
-// ============================================================
+const ADMIN_TOKEN = '2976AllianceTmazight2026';
+
 app.post('/admin/add-teacher', async (req, res) => {
   const token = req.query.token;
-  if (token !== '2976AllianceTmazight2026') {
+  if (token !== ADMIN_TOKEN) {
     return res.status(403).json({ error: 'Token invalide' });
   }
 
@@ -593,47 +580,27 @@ app.post('/admin/add-teacher', async (req, res) => {
 
   try {
     // Vérifier que le cours existe
-    const course = await new Promise((resolve, reject) => {
-      db.get('SELECT * FROM courses WHERE id = ?', [courseId], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
+    const course = await db.get('SELECT * FROM courses WHERE id = $1', [courseId]);
     if (!course) return res.status(404).json({ error: 'Cours introuvable' });
 
     // Vérifier si l'email est déjà utilisé
-    const existing = await new Promise((resolve, reject) => {
-      db.get('SELECT * FROM users WHERE email = ?', [email], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
+    const existing = await db.get('SELECT * FROM users WHERE email = $1', [email]);
     if (existing) return res.status(409).json({ error: 'Cet email est déjà utilisé' });
 
     // Hacher le mot de passe
     const hash = await bcrypt.hash(password, 10);
 
     // Insérer l'utilisateur
-    await new Promise((resolve, reject) => {
-      db.run('INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, ?)',
-        [email, hash, name, 'teacher'],
-        function(err) {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+    await db.run(
+      'INSERT INTO users (email, password_hash, name, role) VALUES ($1, $2, $3, $4)',
+      [email, hash, name, 'teacher']
+    );
 
     // Mettre à jour le cours (associer l'enseignant)
-    await new Promise((resolve, reject) => {
-      db.run('UPDATE courses SET teacher = ?, teacherEmail = ? WHERE id = ?',
-        [name, email, courseId],
-        function(err) {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+    await db.run(
+      'UPDATE courses SET teacher = $1, teacherEmail = $2 WHERE id = $3',
+      [name, email, courseId]
+    );
 
     res.json({ success: true, message: `Enseignant ${name} ajouté et associé au cours ${course.title}` });
 
@@ -641,10 +608,98 @@ app.post('/admin/add-teacher', async (req, res) => {
     setImmediate(() => backupDatabase());
 
   } catch (err) {
+    console.error('❌ Erreur ajout enseignant:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+//  AJOUT D'UN ADMINISTRATEUR (route protégée par token)
+// ============================================================
+app.post('/admin/add-admin', async (req, res) => {
+  const token = req.query.token;
+  if (token !== ADMIN_TOKEN) {
+    return res.status(403).json({ error: 'Token invalide' });
+  }
+
+  const { email, password, name } = req.body;
+  if (!email || !password || !name) {
+    return res.status(400).json({ error: 'Tous les champs sont requis : email, password, name' });
+  }
+
+  try {
+    // Vérifier si l'email est déjà utilisé
+    const existing = await db.get('SELECT * FROM users WHERE email = $1', [email]);
+    if (existing) return res.status(409).json({ error: 'Cet email est déjà utilisé' });
+
+    // Hacher le mot de passe
+    const hash = await bcrypt.hash(password, 10);
+
+    // Insérer l'utilisateur
+    await db.run(
+      'INSERT INTO users (email, password_hash, name, role) VALUES ($1, $2, $3, $4)',
+      [email, hash, name, 'admin']
+    );
+
+    res.json({ success: true, message: `Administrateur ${name} ajouté avec succès !` });
+
+    // Sauvegarder la base après modification
+    setImmediate(() => backupDatabase());
+
+  } catch (err) {
+    console.error('❌ Erreur ajout administrateur:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+//  ROUTE D'INITIALISATION MANUELLE (à supprimer après)
+// ============================================================
+app.get('/init-db', async (req, res) => {
+  const token = req.query.token;
+  if (token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Token invalide' });
+
+  try {
+    const scriptPath = path.join(__dirname, 'initDB.js');
+    exec(`node ${scriptPath}`, (error, stdout, stderr) => {
+      if (error) {
+        console.error(`Erreur : ${error}`);
+        return res.status(500).json({ error: 'Échec de l\'initialisation', details: stderr });
+      }
+      console.log(stdout);
+      res.json({ message: 'Base de données initialisée avec succès !', output: stdout });
+      setImmediate(() => backupDatabase());
+    });
+  } catch (err) {
     console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
+
+// ============================================================
+//  ROUTE DE DEBUG (à supprimer après)
+// ============================================================
+app.get('/debug-users', async (req, res) => {
+  const token = req.query.token;
+  if (token !== ADMIN_TOKEN) return res.status(403).json({ error: 'Token invalide' });
+
+  try {
+    const rows = await db.all('SELECT email, password_hash FROM users');
+    const result = rows.map(r => ({
+      email: r.email,
+      hash_length: r.password_hash ? r.password_hash.length : 0,
+      hash_start: r.password_hash ? r.password_hash.substring(0, 20) : null
+    }));
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+//  DÉMARRAGE
+// ============================================================
 app.listen(PORT, () => {
   console.log(`🚀 Serveur Timsirin démarré sur http://localhost:${PORT}`);
 });
