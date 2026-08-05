@@ -148,7 +148,9 @@
         // ================================================================
         // CONFIGURATION
         // ================================================================
-        const API_BASE = 'https://timsirin-github-io.onrender.com/api';
+        const API_BASE = 'const API_BASE = window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')
+    ? 'http://localhost:10000/api'
+    : window.location.origin + '/api';
 
         let currentUser = JSON.parse(localStorage.getItem('currentUser')) || null;
         let courses = [];

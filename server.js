@@ -3,6 +3,7 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
+const path = require('path');
 require('dotenv').config();
 
 // IMPORTEZ VOTRE CONNEXION POSTGRESQL (database.js)
@@ -15,14 +16,17 @@ const PORT = process.env.PORT || 10000;
 app.use(express.json());
 app.use(cors());
 
+// Servir les fichiers statiques (ex: index.html)
+app.use(express.static(path.join(__dirname)));
+
 // =============================================
 // 3. ROUTE D'INSCRIPTION (Register)
 // =============================================
-app.post('/register', async (req, res) => {
+app.post('/api/auth/register', async (req, res) => {
     try {
         const { email, password, name, role } = req.body;
 
-        // Vérifier si l'utilisateur existe déjà dans PostgreSQL
+        // Vérifier si l'utilisateur existe déjà
         const existingUser = await db.get('SELECT * FROM users WHERE email = $1', [email]);
         if (existingUser) {
             return res.status(400).json({ message: "Cet email est déjà utilisé" });
@@ -45,40 +49,34 @@ app.post('/register', async (req, res) => {
 });
 
 // =============================================
-// 4. ROUTE DE CONNEXION (Login) - CORRIGÉE
+// 4. ROUTE DE CONNEXION (Login)
 // =============================================
-app.post('/login', async (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
     try {
         const { email, password } = req.body;
 
-        // ÉTAPE 1 : Récupérer l'utilisateur dans la base PostgreSQL
+        // Récupérer l'utilisateur
         const user = await db.get('SELECT * FROM users WHERE email = $1', [email]);
 
-        // ==========================================================
-        // CORRECTION DE SÉCURITÉ AJOUTÉE (Empêche l'erreur "Illegal arguments")
-        // On vérifie bien 'password_hash' car c'est le nom de la colonne SQL
-        // ==========================================================
         if (!user || !user.password_hash) {
             return res.status(401).json({ error: "Email ou mot de passe incorrect" });
         }
-        // ==========================================================
 
-        // ÉTAPE 2 : Comparer le mot de passe envoyé avec le hash stocké
+        // Comparer le mot de passe
         const isMatch = await bcrypt.compare(password, user.password_hash);
 
         if (!isMatch) {
             return res.status(401).json({ error: "Email ou mot de passe incorrect" });
         }
 
-        // ÉTAPE 3 : Générer le token JWT
-        // "process.env.JWT_SECRET" lira la valeur "azul_tamazight" que vous mettrez sur Render
+        // Générer le token JWT
         const token = jwt.sign(
             { userId: user.id, email: user.email, role: user.role }, 
-            process.env.JWT_SECRET, 
+            process.env.JWT_SECRET || 'defaul_secret_key', 
             { expiresIn: '7d' }
         );
 
-        // ÉTAPE 4 : Réponse au Frontend
+        // Réponse au Frontend
         res.json({ 
             token, 
             user: { 
@@ -96,17 +94,14 @@ app.post('/login', async (req, res) => {
 });
 
 // =============================================
-// 5. ROUTE DE RÉCUPÉRATION DES STATS FINANCIERS (Dashboard Admin)
+// 5. ROUTE DES STATS FINANCIERS
 // =============================================
-app.get('/stats/financial', async (req, res) => {
+app.get('/api/stats/financial', async (req, res) => {
     try {
-        // Calcule le total des montants versés par les étudiants
         const totalPaid = await db.get('SELECT SUM(amount_paid) as total FROM students');
-        
-        // Réponse JSON
         res.json({
             total_encaisse: parseFloat(totalPaid?.total || 0),
-            total_dons: 0.00 // Placeholder si vous n'avez pas de table dédiée aux dons
+            total_dons: 0.00
         });
     } catch (error) {
         console.error('❌ Erreur Stats:', error);
@@ -115,9 +110,9 @@ app.get('/stats/financial', async (req, res) => {
 });
 
 // =============================================
-// 6. ROUTE POUR RÉCUPÉRER LES COURS
+// 6. ROUTES COURS & ÉTUDIANTS
 // =============================================
-app.get('/courses', async (req, res) => {
+app.get('/api/courses', async (req, res) => {
     try {
         const rows = await db.all('SELECT * FROM courses');
         res.json(rows);
@@ -127,10 +122,7 @@ app.get('/courses', async (req, res) => {
     }
 });
 
-// =============================================
-// 7. ROUTE POUR RÉCUPÉRER LES ÉTUDIANTS
-// =============================================
-app.get('/students', async (req, res) => {
+app.get('/api/students', async (req, res) => {
     try {
         const rows = await db.all('SELECT * FROM students');
         res.json(rows);
@@ -140,9 +132,43 @@ app.get('/students', async (req, res) => {
     }
 });
 
+app.get('/api/attendance', async (req, res) => {
+    try {
+        const rows = await db.all('SELECT * FROM attendance');
+        res.json(rows);
+    } catch (error) {
+        console.error('❌ Erreur Attendance:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/planning', async (req, res) => {
+    try {
+        const courses = await db.all('SELECT * FROM courses');
+        const slots = await db.all('SELECT * FROM slots');
+        const learners = await db.all('SELECT * FROM learners');
+
+        const planning = courses.map(c => ({
+            ...c,
+            slots: slots.filter(s => s.courseid === c.id || s.courseId === c.id),
+            learners: learners.filter(l => l.courseid === c.id || l.courseId === c.id).map(l => l.name)
+        }));
+
+        res.json(planning);
+    } catch (error) {
+        console.error('❌ Erreur Planning:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Route par défaut (SPA / HTML)
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'index.html'));
+});
+
 // =============================================
-// 8. LANCEMENT DU SERVEUR
+// 7. LANCEMENT DU SERVEUR
 // =============================================
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Serveur Timsirin démarré sur le port ${PORT}`);
 });
