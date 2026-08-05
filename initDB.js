@@ -41,35 +41,114 @@ const ATTENDANCE = [
 ];
 
 async function initDB() {
-  db.run('DELETE FROM users');
-  db.run('DELETE FROM courses');
-  db.run('DELETE FROM students');
-  db.run('DELETE FROM attendance');
-  db.run('DELETE FROM slots');
-  db.run('DELETE FROM learners');
+  // Supprimer les tables (ordre inverse des dépendances)
+  await db.query('DROP TABLE IF EXISTS attendance');
+  await db.query('DROP TABLE IF EXISTS students');
+  await db.query('DROP TABLE IF EXISTS courses');
+  await db.query('DROP TABLE IF EXISTS users');
+  await db.query('DROP TABLE IF EXISTS slots');
+  await db.query('DROP TABLE IF EXISTS learners');
 
+  // Créer les tables
+  await db.query(`
+    CREATE TABLE users (
+      id SERIAL PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE courses (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      teacher TEXT,
+      teacherEmail TEXT,
+      schedule TEXT,
+      public TEXT,
+      zoomLink TEXT
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE students (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT,
+      courseId TEXT,
+      payment_status TEXT DEFAULT 'unpaid',
+      amount_paid REAL DEFAULT 0
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE attendance (
+      id TEXT PRIMARY KEY,
+      studentId TEXT,
+      courseId TEXT,
+      date TEXT,
+      status TEXT
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE slots (
+      id SERIAL PRIMARY KEY,
+      courseId TEXT,
+      date TEXT,
+      time TEXT
+    )
+  `);
+
+  await db.query(`
+    CREATE TABLE learners (
+      id SERIAL PRIMARY KEY,
+      courseId TEXT,
+      name TEXT
+    )
+  `);
+
+  // Insérer les utilisateurs
   for (const u of USERS) {
     const hash = await bcrypt.hash(u.password, 10);
-    db.run('INSERT INTO users (email, password_hash, name, role) VALUES (?, ?, ?, ?)',
+    await db.query('INSERT INTO users (email, password_hash, name, role) VALUES ($1, $2, $3, $4)',
       [u.email, hash, u.name, u.role]);
   }
+
+  // Insérer les cours
   for (const c of COURSES) {
-    db.run('INSERT INTO courses (id, title, teacher, teacherEmail, schedule, public, zoomLink) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [c.id, c.title, c.teacher, c.teacherEmail, c.schedule, c.public, c.zoomLink]);
-  }
-  for (const s of STUDENTS) {
-    db.run('INSERT INTO students (id, name, email, courseId, payment_status, amount_paid) VALUES (?, ?, ?, ?, ?, ?)',
-      [s.id, s.name, s.email, s.courseId, s.payment_status, s.amount_paid]);
-  }
-  for (const a of ATTENDANCE) {
-    db.run('INSERT INTO attendance (id, studentId, courseId, date, status) VALUES (?, ?, ?, ?, ?)',
-      [a.id, a.studentId, a.courseId, a.date, a.status]);
+    await db.query(
+      'INSERT INTO courses (id, title, teacher, teacherEmail, schedule, public, zoomLink) VALUES ($1, $2, $3, $4, $5, $6, $7)',
+      [c.id, c.title, c.teacher, c.teacherEmail, c.schedule, c.public, c.zoomLink]
+    );
   }
 
-  console.log('✅ Base initialisée');
+  // Insérer les étudiants
+  for (const s of STUDENTS) {
+    await db.query(
+      'INSERT INTO students (id, name, email, courseId, payment_status, amount_paid) VALUES ($1, $2, $3, $4, $5, $6)',
+      [s.id, s.name, s.email, s.courseId, s.payment_status, s.amount_paid]
+    );
+  }
+
+  // Insérer les présences
+  for (const a of ATTENDANCE) {
+    await db.query(
+      'INSERT INTO attendance (id, studentId, courseId, date, status) VALUES ($1, $2, $3, $4, $5)',
+      [a.id, a.studentId, a.courseId, a.date, a.status]
+    );
+  }
+
+  console.log('✅ Base PostgreSQL initialisée avec succès !');
   console.log('👑 Admins:', USERS.filter(u => u.role === 'admin').map(u => u.email).join(', '));
   console.log('📚 Cours:', COURSES.length);
-  db.close();
 }
 
-initDB();
+initDB()
+  .then(() => process.exit(0))
+  .catch(err => {
+    console.error('❌ Erreur:', err);
+    process.exit(1);
+  });
