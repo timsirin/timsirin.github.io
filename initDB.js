@@ -1,6 +1,9 @@
 const db = require('./database');
 const bcrypt = require('bcryptjs');
 
+// ============================================================
+//  COMPTES UTILISATEURS
+// ============================================================
 const USERS = [
   { email: 'tahar.boukhenoufa@gmail.com', password: 'Admin01A', name: 'Tahar Boukhenoufa', role: 'admin' },
   { email: 'inscription.aptamazight@gmail.com', password: 'Admin02B', name: 'Inscription APT', role: 'admin' },
@@ -9,6 +12,9 @@ const USERS = [
   { email: 'amazisyfax@gmail.com', password: 'Aselmad02', name: 'Said Adel', role: 'teacher' }
 ];
 
+// ============================================================
+//  COURS
+// ============================================================
 const COURSES = [
   { id: 'c1', title: 'Taqbaylit', teacher: 'Said Adel', teacherEmail: 'amazisyfax@gmail.com', schedule: 'Samedi 14h00 - 16h00', public: 'adultes', zoomLink: '' },
   { id: 'c2', title: 'Tacawit', teacher: 'À définir', teacherEmail: '', schedule: 'Lundi 18h00 - 20h00', public: 'adultes', zoomLink: '' },
@@ -24,6 +30,9 @@ const COURSES = [
   { id: 'c12', title: 'Amazigh Compréhension', teacher: 'Ramdane Touati', teacherEmail: 'touati.ramdane@yahoo.fr', schedule: 'Jeudi 17h00 - 19h00', public: 'adultes', zoomLink: '' }
 ];
 
+// ============================================================
+//  ÉTUDIANTS (exemples)
+// ============================================================
 const STUDENTS = [
   { id: 's1', name: 'Amine Belkacem', email: 'amine.b@gmail.com', courseId: 'c1', payment_status: 'paid', amount_paid: 120 },
   { id: 's2', name: 'Lydia Ould', email: 'lydia.o@hotmail.fr', courseId: 'c1', payment_status: 'partial', amount_paid: 60 },
@@ -33,14 +42,22 @@ const STUDENTS = [
   { id: 's6', name: 'Idir Sadi', email: 'idir.s@gmail.com', courseId: 'c5', payment_status: 'unpaid', amount_paid: 0 }
 ];
 
+// ============================================================
+//  PRÉSENCES
+// ============================================================
 const ATTENDANCE = [
-  { id: 'att1', studentId: 's1', courseId: 'c1', date: '2026-08-04', status: 'present' },
-  { id: 'att2', studentId: 's2', courseId: 'c1', date: '2026-08-04', status: 'present' },
-  { id: 'att3', studentId: 's3', courseId: 'c1', date: '2026-08-04', status: 'absent' },
-  { id: 'att4', studentId: 's4', courseId: 'c12', date: '2026-08-04', status: 'present' }
+  { id: 'att1', studentId: 's1', courseId: 'c1', date: '2026-08-21', status: 'present' },
+  { id: 'att2', studentId: 's2', courseId: 'c1', date: '2026-08-21', status: 'present' },
+  { id: 'att3', studentId: 's3', courseId: 'c1', date: '2026-08-21', status: 'absent' },
+  { id: 'att4', studentId: 's4', courseId: 'c12', date: '2026-08-21', status: 'present' }
 ];
 
+// ============================================================
+//  INITIALISATION
+// ============================================================
 async function initDB() {
+  console.log('🔄 Initialisation de la base Neon...');
+
   // Supprimer les tables (ordre inverse des dépendances)
   await db.query('DROP TABLE IF EXISTS attendance');
   await db.query('DROP TABLE IF EXISTS students');
@@ -141,14 +158,17 @@ async function initDB() {
     );
   }
 
-  console.log('✅ Base PostgreSQL initialisée avec succès !');
+  console.log('✅ Base PostgreSQL (Neon) initialisée avec succès !');
   console.log('👑 Admins:', USERS.filter(u => u.role === 'admin').map(u => u.email).join(', '));
+  console.log('👨‍🏫 Enseignants:', USERS.filter(u => u.role === 'teacher').map(u => u.email).join(', '));
   console.log('📚 Cours:', COURSES.length);
+  console.log('👥 Étudiants:', STUDENTS.length);
 }
 
+// Exécution
 initDB()
   .then(() => process.exit(0))
   .catch(err => {
-    console.error('❌ Erreur:', err);
+    console.error('❌ Erreur lors de l\'initialisation:', err);
     process.exit(1);
   });
