@@ -254,19 +254,18 @@
         // ================================================================
         // CHARGEMENT DES DONNÉES
         // ================================================================
-        async function loadAllData() {
-            try {
-                courses = await fetchWithAuth('/courses');
-                students = await fetchWithAuth('/students');
-                attendance = await fetchWithAuth('/attendance');
-                planningData = await fetchWithAuth('/planning');
-                console.log('📊 Données chargées:', { courses: courses.length, students: students.length, attendance: attendance
-                        .length });
-            } catch (err) {
-                console.error('❌ Erreur chargement données:', err);
-                alert('Impossible de charger les données. Vérifiez que le serveur est accessible.');
-            }
-        }
+       async function loadAllData() {
+    try {
+        const opts = { cache: 'no-store' }; // ⚠️ Force le rechargement
+        courses = await fetchWithAuth('/courses', opts);
+        students = await fetchWithAuth('/students', opts);
+        attendance = await fetchWithAuth('/attendance', opts);
+        planningData = await fetchWithAuth('/planning', opts);
+    } catch (err) {
+        console.error('Erreur chargement données:', err);
+        alert('Impossible de charger les données. Vérifiez que le serveur est accessible.');
+    }
+}
 
         // ================================================================
         // INIT APP
