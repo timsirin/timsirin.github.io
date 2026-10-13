@@ -7,7 +7,7 @@
 
     <script src="https://cdn.tailwindcss.com">
     </script>
-    <script src="https://unpkg.com/lucide@latest">
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js">
     </script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js">
     </script>
@@ -114,7 +114,7 @@
                     <div><h2 class="text-2xl font-bold text-slate-900 flex items-center gap-2"><i data-lucide="calendar" class="w-6 h-6 text-[#008751]"></i> Planning des cours</h2><p class="text-sm text-slate-500">Gérez les créneaux, les apprenants et les liens Zoom.</p></div>
                     <div class="flex items-center gap-3">
                         <button onclick="resetPlanning()" class="px-4 py-2 border border-slate-300 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 transition flex items-center gap-2"><i data-lucide="rotate-ccw" class="w-4 h-4"></i> Réinitialiser</button>
-                        <button onclick="exportPlanningPDF()" class="px-4 py-2 bg-[#E31B23] hover:bg-[#b3151c] text-white rounded-xl text-sm font-bold shadow-lg shadow-[#E31B23]/25 transition flex items-center gap-2"><i data-lucide="file-pdf" class="w-4 h-4"></i> Exporter PDF</button>
+                        <button onclick="exportPlanningPDF()" class="px-4 py-2 bg-[#E31B23] hover:bg-[#b3151c] text-white rounded-xl text-sm font-bold shadow-lg shadow-[#E31B23]/25 transition flex items-center gap-2"><i data-lucide="file-down" class="w-4 h-4"></i> Exporter PDF</button>
                     </div>
                 </div>
                 <div class="planning-grid" id="planningGrid"></div>
@@ -177,9 +177,13 @@
                 delete headers['Content-Type'];
             }
             const response = await fetch(API_BASE + url, { ...options, headers });
+            if (response.status === 401) {
+                handleLogout();
+                throw new Error('Session expirée, veuillez vous reconnecter.');
+            }
             if (!response.ok) {
                 const error = await response.json().catch(() => ({}));
-                throw new Error(error.error || 'Erreur serveur');
+                throw new Error(error.error || 'Erreur serveur (' + response.status + ')');
             }
             return response.json();
         }
@@ -192,9 +196,7 @@
 
             // Nettoyage des espaces (très important)
             const email = document.getElementById('loginEmail').value.trim();
-            const password = document.getElementById('loginPassword').value.trim();
-
-            console.log('🔐 Tentative de connexion avec:', { email });
+            const password = document.getElementById('loginPassword').value;
 
             // Afficher un message de chargement (facultatif)
             const submitBtn = document.querySelector('#loginForm button[type="submit"]');
@@ -212,14 +214,11 @@
                     body: JSON.stringify({ email, password })
                 });
 
-                const data = await response.json();
-                console.log('📦 Réponse serveur:', data);
+                const data = await response.json().catch(() => ({}));
 
                 if (!response.ok) {
                     document.getElementById('loginError').textContent = data.error || 'Identifiants incorrects';
                     document.getElementById('loginError').classList.remove('hidden');
-                    submitBtn.innerHTML = originalText;
-                    submitBtn.disabled = false;
                     return;
                 }
 
@@ -254,18 +253,20 @@
         // ================================================================
         // CHARGEMENT DES DONNÉES
         // ================================================================
-       async function loadAllData() {
-    try {
-        const opts = { cache: 'no-store' }; // ⚠️ Force le rechargement
-        courses = await fetchWithAuth('/courses', opts);
-        students = await fetchWithAuth('/students', opts);
-        attendance = await fetchWithAuth('/attendance', opts);
-        planningData = await fetchWithAuth('/planning', opts);
-    } catch (err) {
-        console.error('Erreur chargement données:', err);
-        alert('Impossible de charger les données. Vérifiez que le serveur est accessible.');
-    }
-}
+        async function loadAllData() {
+            try {
+                const opts = { cache: 'no-store' };
+                [courses, students, attendance, planningData] = await Promise.all([
+                    fetchWithAuth('/courses', opts),
+                    fetchWithAuth('/students', opts),
+                    fetchWithAuth('/attendance', opts),
+                    fetchWithAuth('/planning', opts)
+                ]);
+            } catch (err) {
+                console.error('Erreur chargement données:', err);
+                if (currentUser) alert('Impossible de charger les données. Vérifiez que le serveur est accessible.');
+            }
+        }
 
         // ================================================================
         // INIT APP
@@ -279,10 +280,11 @@
             'Enseignant';
 
             const isAdmin = currentUser.role === 'admin';
-            document.getElementById('tabDashboard').classList.toggle('hidden', !isAdmin);
-            document.getElementById('tabManagement').classList.toggle('hidden', !isAdmin);
+            document.getElementById('tabDashboard').classList.toggle('hidden-tab', !isAdmin);
+            document.getElementById('tabManagement').classList.toggle('hidden-tab', !isAdmin);
 
             await loadAllData();
+            if (!currentUser) return; // session expirée pendant le chargement
 
             populateAttendanceSelect();
             populateStudentCourseSelect();
@@ -379,8 +381,8 @@
             if (currentUser.role !== 'admin') return;
             try {
                 const data = await fetchWithAuth('/stats/financial');
-                document.getElementById('statTotalEncaissement').textContent = data.total_encaisse.toFixed(2) + ' €';
-                document.getElementById('statTotalDons').textContent = data.total_dons.toFixed(2) + ' €';
+                document.getElementById('statTotalEncaissement').textContent = Number(data.total_encaisse || 0).toFixed(2) + ' €';
+                document.getElementById('statTotalDons').textContent = Number(data.total_dons || 0).toFixed(2) + ' €';
             } catch (err) {
                 console.error('Erreur chargement stats financières:', err);
             }
@@ -423,17 +425,17 @@
                 updateDateDisplay();
                 return;
             }
-            const today = new Date().toISOString().slice(0, 10);
+            const today = localISODate();
             const todayAtt = attendance.filter(a => a.date === today && a.courseId === courseId);
             roster.innerHTML = courseStudents.map(s => {
-                const record = todayAtt.find(a => a.studentId === s.id);
-                const status = record ? record.status : 'absent';
-                const initials = s.name.split(' ').map(n => n[0]).join('').slice(0, 2);
+                const record = todayAtt.filter(a => a.studentId === s.id).pop();
+                const status = record ? record.status : '';
+                const initials = escHtml(s.name.split(/\s+/).filter(Boolean).map(n => n[0]).join('').slice(0, 2).toUpperCase());
                 return `
                     <div class="roster-item">
                         <div class="student-info">
                             <div class="avatar">${initials}</div>
-                            <div><div class="name">${s.name}</div><div class="email">${s.email}</div></div>
+                            <div><div class="name">${escHtml(s.name)}</div><div class="email">${escHtml(s.email)}</div></div>
                         </div>
                         <div class="actions">
                             <button class="btn-status present ${status === 'present' ? 'active' : ''}" onclick="markAttendance('${s.id}','${courseId}','present')"><i data-lucide="check" class="w-3.5 h-3.5"></i> Présent</button>
@@ -451,7 +453,7 @@
         async function markAttendance(studentId, courseId, status) {
             try {
                 await fetchWithAuth('/attendance', { method: 'POST', body: JSON.stringify({ studentId, courseId,
-                        status }) });
+                        status, date: localISODate() }) });
                 attendance = await fetchWithAuth('/attendance');
                 renderAttendance();
                 updateStats();
@@ -473,7 +475,7 @@
                     const s = students.find(st => st.id === a.studentId) || { name: 'Inconnu', email: '-' };
                     const c = courses.find(co => co.id === a.courseId) || { title: 'Inconnu', teacher: '-' };
                     const label = a.status === 'present' ? 'Présent' : a.status === 'retard' ? 'En retard' : 'Absent';
-                    csv += `"${a.date}";"${s.name}";"${s.email}";"${c.title}";"${c.teacher}";"${label}"\n`;
+                    csv += [a.date, s.name, s.email, c.title, c.teacher, label].map(csvCell).join(';') + '\n';
                 }
                 const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
                 const url = URL.createObjectURL(blob);
@@ -508,7 +510,7 @@
                 return `
                     <div class="planning-card" style="border-left-color:${borderColor};" data-course-id="${c.id}">
                         <div class="card-head">
-                            <h3>${c.title}</h3>
+                            <h3>${escHtml(c.title)}</h3>
                             <span class="public-badge ${publicClass}">${publicLabel}</span>
                         </div>
                         <div class="card-body">
@@ -538,7 +540,7 @@
                                 </div>
                                 <div class="learner-tags" id="learner-tags-${c.id}">
                                     ${(c.learners || []).length === 0 ? '<span class="empty">Aucun apprenant</span>' :
-                                    (c.learners || []).map((l, li) => `<span class="tag">${escHtml(l)} <span class="remove" onclick="removeLearner('${c.id}',${li})">✕</span></span>`).join('')}
+                                    (c.learners || []).map(l => `<span class="tag">${escHtml(l.name)} <span class="remove" onclick="removeLearner(${l.id})">✕</span></span>`).join('')}
                                 </div>
                             </div>
                         </div>
@@ -593,61 +595,51 @@
             } catch (err) { alert(err.message); }
         }
 
-        async function removeLearner(courseId, index) {
-            const course = planningData.find(c => c.id === courseId);
-            if (!course || !course.learners || !course.learners[index]) return;
-            const name = course.learners[index];
+        async function refreshPlanning() {
+            planningData = await fetchWithAuth('/planning');
+            renderPlanning();
+        }
+
+        async function removeLearner(id) {
             try {
-                const learners = await fetchWithAuth(`/learners?courseId=${courseId}&name=${encodeURIComponent(name)}`);
-                if (learners && learners.length > 0) {
-                    const id = learners[0].id;
-                    await fetchWithAuth(`/learners/${id}`, { method: 'DELETE' });
-                    planningData = await fetchWithAuth('/planning');
-                    renderPlanning();
-                } else { alert('Apprenant introuvable'); }
+                await fetchWithAuth(`/learners/${id}`, { method: 'DELETE' });
+                await refreshPlanning();
             } catch (err) { alert(err.message); }
         }
 
         async function clearLearners(courseId) {
             if (!confirm('Effacer tous les apprenants de ce cours ?')) return;
             try {
-                const learners = await fetchWithAuth(`/learners?courseId=${courseId}`);
-                for (const l of learners) await fetchWithAuth(`/learners/${l.id}`, { method: 'DELETE' });
-                planningData = await fetchWithAuth('/planning');
-                renderPlanning();
+                await fetchWithAuth(`/planning/${courseId}?what=learners`, { method: 'DELETE' });
+                await refreshPlanning();
             } catch (err) { alert(err.message); }
         }
 
+        // Fichier .csv/.txt : un nom par ligne (1re colonne), ajouté à la liste du planning
         async function handleLearnerFile(event, courseId) {
             const file = event.target.files[0];
             if (!file) return;
-            const formData = new FormData();
-            formData.append('file', file);
-            formData.append('courseId', courseId);
             try {
-                const result = await fetchWithAuth('/students/import', { method: 'POST', body: formData });
-                alert(`Importé : ${result.imported} apprenants sur ${result.total}`);
-                students = await fetchWithAuth('/students');
-                planningData = await fetchWithAuth('/planning');
-                renderPlanning();
-                renderAdminTables();
-                updateStats();
+                const text = (await file.text()).replace(/^\uFEFF/, '');
+                const headers = ['nom', 'name', 'nom complet', 'nom & prénom', 'nom et prénom', 'apprenant'];
+                const names = text.split(/\r?\n/)
+                    .map(l => (l.split(/[;,\t]/)[0] || '').replace(/^"|"$/g, '').trim())
+                    .filter(n => n && !headers.includes(n.toLowerCase()));
+                if (names.length === 0) { alert('Aucun nom trouvé dans le fichier.'); return; }
+                const result = await fetchWithAuth('/learners', { method: 'POST', body: JSON.stringify({ courseId, names }) });
+                alert(`${result.added} apprenant(s) ajouté(s).`);
+                await refreshPlanning();
             } catch (err) { alert(err.message); }
-            event.target.value = '';
+            finally { event.target.value = ''; }
         }
 
         async function resetPlanning() {
             if (!confirm('Réinitialiser tous les créneaux et apprenants du planning ?')) return;
-            const accessible = getAccessibleCourses();
             try {
-                for (const c of accessible) {
-                    const slots = await fetchWithAuth(`/slots?courseId=${c.id}`);
-                    for (const s of slots) await fetchWithAuth(`/slots/${s.id}`, { method: 'DELETE' });
-                    const learners = await fetchWithAuth(`/learners?courseId=${c.id}`);
-                    for (const l of learners) await fetchWithAuth(`/learners/${l.id}`, { method: 'DELETE' });
+                for (const c of getAccessibleCourses()) {
+                    await fetchWithAuth(`/planning/${c.id}?what=all`, { method: 'DELETE' });
                 }
-                planningData = await fetchWithAuth('/planning');
-                renderPlanning();
+                await refreshPlanning();
                 updateStats();
             } catch (err) { alert(err.message); }
         }
@@ -770,7 +762,7 @@ function exportPlanningPDF() {
                                 const bg = colors[ci] || '#0072CE';
                                 const pubIcon = slot.public === 'enfants' ? '👶' : '👨';
                                 item.style.cssText = `background:${bg};color:#fff;border-radius:4px;padding:1px 4px;margin-bottom:2px;font-weight:500;word-break:break-word;font-size:0.55rem;display:flex;justify-content:space-between;align-items:center;`;
-                                item.innerHTML = `<span>${slot.course.substring(0,12)} ${slot.time}</span><span style="background:rgba(255,255,255,0.3);border-radius:10px;padding:0 6px;font-size:0.5rem;">${pubIcon}</span>`;
+                                item.innerHTML = `<span>${escHtml(slot.course.substring(0,12))} ${escHtml(slot.time)}</span><span style="background:rgba(255,255,255,0.3);border-radius:10px;padding:0 6px;font-size:0.5rem;">${pubIcon}</span>`;
                                 listDiv.appendChild(item);
                             });
                             td.appendChild(listDiv);
@@ -798,7 +790,7 @@ function exportPlanningPDF() {
                 const icon = pubInfo === 'enfants' ? '👶' : '👨';
                 const span = document.createElement('span');
                 span.style.cssText = 'display:inline-flex;align-items:center;gap:4px;';
-                span.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:${bg};border-radius:3px;"></span> ${courseTitle} ${icon}`;
+                span.innerHTML = `<span style="display:inline-block;width:10px;height:10px;background:${bg};border-radius:3px;"></span> ${escHtml(courseTitle)} ${icon}`;
                 legend.appendChild(span);
             });
             container.appendChild(legend);
@@ -810,35 +802,19 @@ function exportPlanningPDF() {
     footer.textContent = `Planning généré via Timsirin — ${new Date().toLocaleString('fr-FR')}`;
     container.appendChild(footer);
 
-    // Sauvegarder le HTML original pour le restaurer après
-    const original = document.body.innerHTML;
-    document.body.innerHTML = '';
-    document.body.appendChild(container);
-    document.body.style.background = '#fff';
-    document.body.style.padding = '12px';
-
     const opt = {
         margin: [6, 6, 6, 6],
-        filename: `Planning_Timsirin_${new Date().toISOString().slice(0,10)}.pdf`,
+        filename: `Planning_Timsirin_${localISODate()}.pdf`,
         image: { type: 'jpeg', quality: 0.98 },
         html2canvas: { scale: 2, useCORS: true, letterRendering: true },
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' },
-        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+        pagebreak: { mode: ['css', 'legacy'] }
     };
 
-    html2pdf().set(opt).from(container).save().then(() => {
-        document.body.innerHTML = original;
-        document.body.style.background = '';
-        document.body.style.padding = '';
-        // Recharger l'état de l'app (pour réafficher correctement)
-        initApp();
-    }).catch(err => {
+    // html2pdf rend le conteneur dans son propre calque : la page reste intacte.
+    html2pdf().set(opt).from(container).save().catch(err => {
         console.error('Erreur PDF:', err);
         alert('Erreur lors de l\'export PDF.');
-        document.body.innerHTML = original;
-        document.body.style.background = '';
-        document.body.style.padding = '';
-        initApp();
     });
 }
 
@@ -850,7 +826,7 @@ function exportPlanningPDF() {
             const tbody1 = document.getElementById('adminCoursesTable');
             tbody1.innerHTML = courses.map(c => {
                 const count = students.filter(s => s.courseId === c.id).length;
-                return `<tr><td><strong>${c.title}</strong></td><td>${c.teacher}</td><td><span class="text-xs text-slate-400">${c.teacherEmail}</span></td><td><span class="bg-slate-100 px-2 py-0.5 rounded text-xs">${c.schedule || '—'}</span></td><td><span class="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full text-xs font-bold">${count}</span></td><td style="text-align:right;"><button class="delete-btn" onclick="deleteCourse('${c.id}')" title="Supprimer"><i data-lucide="trash-2" class="w-4 h-4"></i></button><form class="import-csv-form" onsubmit="importStudents(event, '${c.id}')" enctype="multipart/form-data"><input type="file" name="file" accept=".csv,.txt" required /><button type="submit">📤 Importer</button></form></td></tr>`;
+                return `<tr><td><strong>${escHtml(c.title)}</strong></td><td>${escHtml(c.teacher)}</td><td><span class="text-xs text-slate-400">${escHtml(c.teacherEmail)}</span></td><td><span class="bg-slate-100 px-2 py-0.5 rounded text-xs">${escHtml(c.schedule) || '—'}</span></td><td><span class="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full text-xs font-bold">${count}</span></td><td style="text-align:right;"><button class="delete-btn" onclick="deleteCourse('${c.id}')" title="Supprimer"><i data-lucide="trash-2" class="w-4 h-4"></i></button><form class="import-csv-form" onsubmit="importStudents(event, '${c.id}')" enctype="multipart/form-data"><input type="file" name="file" accept=".csv,.txt" required /><button type="submit">📤 Importer</button></form></td></tr>`;
             }).join('');
 
             const tbody2 = document.getElementById('adminStudentsTable');
@@ -858,9 +834,9 @@ function exportPlanningPDF() {
                 const c = courses.find(co => co.id === s.courseId);
                 return `<tr>
                     <td><input type="checkbox" class="student-select" data-id="${s.id}" /></td>
-                    <td><strong>${s.name}</strong></td>
-                    <td>${s.email}</td>
-                    <td><span class="bg-blue-50 text-blue-700 px-2 py-0.5 rounded text-xs">${c ? c.title : 'Non assigné'}</span></td>
+                    <td><strong>${escHtml(s.name)}</strong></td>
+                    <td>${escHtml(s.email)}</td>
+                    <td><span class="bg-blue-50 text-blue-700 px-2 py-0.5 rounded text-xs">${c ? escHtml(c.title) : 'Non assigné'}</span></td>
                     <td><select class="payment-status" data-id="${s.id}" onchange="updateStudentPayment('${s.id}', 'payment_status', this.value)"><option value="unpaid" ${s.payment_status === 'unpaid' ? 'selected' : ''}>Impayé</option><option value="partial" ${s.payment_status === 'partial' ? 'selected' : ''}>Partiel</option><option value="paid" ${s.payment_status === 'paid' ? 'selected' : ''}>Payé</option></select></td>
                     <td><input type="number" class="amount-paid" data-id="${s.id}" value="${s.amount_paid || 0}" min="0" step="0.01" onchange="updateStudentPayment('${s.id}', 'amount_paid', this.value)" /></td>
                     <td style="text-align:right;"><button class="delete-btn" onclick="deleteStudent('${s.id}')" title="Supprimer"><i data-lucide="trash-2" class="w-4 h-4"></i></button></td>
@@ -879,8 +855,8 @@ function exportPlanningPDF() {
                     method: 'PUT',
                     body: JSON.stringify({ [field]: field === 'amount_paid' ? parseFloat(value) : value })
                 });
-                await loadAllData();
-                renderAdminTables();
+                const s = students.find(st => st.id === studentId);
+                if (s) s[field] = field === 'amount_paid' ? parseFloat(value) : value;
                 loadFinancialStats();
             } catch (err) { alert(err.message); }
         }
@@ -895,6 +871,7 @@ function exportPlanningPDF() {
             const ids = Array.from(checkboxes).map(cb => cb.dataset.id);
             try {
                 await fetchWithAuth('/students', { method: 'DELETE', body: JSON.stringify({ ids }) });
+                document.getElementById('selectAllStudents').checked = false;
                 await loadAllData();
                 renderAdminTables();
                 loadFinancialStats();
@@ -1049,13 +1026,9 @@ function exportPlanningPDF() {
             if (names.length === 0) { alert('Veuillez saisir au moins un nom.'); return; }
             if (!pasteTargetCourse) return;
             try {
-                for (const name of names) {
-                    await fetchWithAuth('/learners', { method: 'POST', body: JSON.stringify({ courseId: pasteTargetCourse,
-                            name }) });
-                }
-                planningData = await fetchWithAuth('/planning');
-                renderPlanning();
+                await fetchWithAuth('/learners', { method: 'POST', body: JSON.stringify({ courseId: pasteTargetCourse, names }) });
                 closePasteModal();
+                await refreshPlanning();
             } catch (err) { alert(err.message); }
         }
 
@@ -1063,10 +1036,17 @@ function exportPlanningPDF() {
         // UTILITAIRES
         // ================================================================
         function escHtml(str) {
-            if (!str) return '';
-            const d = document.createElement('div');
-            d.textContent = str;
-            return d.innerHTML;
+            if (str === null || str === undefined) return '';
+            return String(str).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+        }
+
+        function csvCell(v) {
+            return '"' + String(v ?? '').replace(/"/g, '""') + '"';
+        }
+
+        // Date du jour au format AAAA-MM-JJ, en heure locale (et non UTC)
+        function localISODate(d = new Date()) {
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
         }
 
         // ================================================================
@@ -1079,9 +1059,6 @@ function exportPlanningPDF() {
                 document.getElementById('authScreen').classList.remove('hidden');
             }
             lucide.createIcons();
-            document.getElementById('pasteModal').addEventListener('click', function(e) {
-                if (e.target === this) closePasteModal();
-            });
         };
 
         console.log('✅ Timsirin — Plateforme prête.');
