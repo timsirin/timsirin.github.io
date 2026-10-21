@@ -474,6 +474,119 @@ app.delete('/api/planning/:courseId', authenticate, async (req, res) => {
 });
 
 // ============================================================
+//  COMPTES UTILISATEURS (onglet Gestion, admin uniquement)
+// ============================================================
+const ROLES = ['teacher', 'admin'];
+const MIN_PASSWORD = 8;
+const isEmail = (s) => typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+
+// Liste des comptes avec les cours attribués (jamais le hash du mot de passe)
+app.get('/api/users', authenticate, requireAdmin, async (req, res) => {
+  try {
+    const users = await db.all('SELECT id, email, name, role FROM users ORDER BY role, name');
+    const courses = await db.all('SELECT id, title, teacherEmail FROM courses ORDER BY id');
+    res.json(users.map(u => ({
+      ...u,
+      courses: courses
+        .filter(c => (c.teacherEmail || '').toLowerCase() === u.email.toLowerCase())
+        .map(c => ({ id: c.id, title: c.title }))
+    })));
+  } catch (err) { serverError(res, err); }
+});
+
+// Attribue les cours cochés à l'utilisateur (remplace l'enseignant précédent de ces cours)
+async function assignCourses(email, name, courseIds) {
+  if (!Array.isArray(courseIds)) return;
+  for (const courseId of courseIds) {
+    await db.run('UPDATE courses SET teacher = $1, teacherEmail = $2 WHERE id = $3', [name, email, courseId]);
+  }
+}
+
+app.post('/api/users', authenticate, requireAdmin, async (req, res) => {
+  const email = String(req.body.email || '').trim().toLowerCase();
+  const name = String(req.body.name || '').trim();
+  const password = String(req.body.password || '');
+  const role = req.body.role || 'teacher';
+  const { courseIds } = req.body;
+
+  if (!name) return res.status(400).json({ error: 'Le nom est requis' });
+  if (!isEmail(email)) return res.status(400).json({ error: 'Email invalide' });
+  if (password.length < MIN_PASSWORD) return res.status(400).json({ error: `Mot de passe : ${MIN_PASSWORD} caractères minimum` });
+  if (!ROLES.includes(role)) return res.status(400).json({ error: 'Rôle invalide' });
+
+  try {
+    const existing = await db.get('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [email]);
+    if (existing) return res.status(409).json({ error: 'Cet email est déjà utilisé' });
+    const hash = await bcrypt.hash(password, 10);
+    const row = await db.get(
+      'INSERT INTO users (email, password_hash, name, role) VALUES ($1, $2, $3, $4) RETURNING id',
+      [email, hash, name, role]);
+    await assignCourses(email, name, courseIds);
+    res.json({ success: true, id: row.id });
+  } catch (err) { serverError(res, err); }
+});
+
+// Modifier nom, rôle et cours attribués
+app.put('/api/users/:id', authenticate, requireAdmin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  try {
+    const user = await db.get('SELECT * FROM users WHERE id = $1', [id]);
+    if (!user) return res.status(404).json({ error: 'Compte introuvable' });
+
+    const name = req.body.name !== undefined ? String(req.body.name).trim() : user.name;
+    const role = req.body.role !== undefined ? req.body.role : user.role;
+    if (!name) return res.status(400).json({ error: 'Le nom est requis' });
+    if (!ROLES.includes(role)) return res.status(400).json({ error: 'Rôle invalide' });
+    if (id === req.user.id && role !== 'admin') {
+      return res.status(400).json({ error: 'Vous ne pouvez pas retirer votre propre rôle administrateur' });
+    }
+
+    await db.run('UPDATE users SET name = $1, role = $2 WHERE id = $3', [name, role, id]);
+    // Le nom affiché dans les cours suit le nom du compte
+    await db.run('UPDATE courses SET teacher = $1 WHERE LOWER(teacherEmail) = LOWER($2)', [name, user.email]);
+
+    if (Array.isArray(req.body.courseIds)) {
+      // Cours décochés : plus d'enseignant
+      await db.run(
+        `UPDATE courses SET teacher = 'À définir', teacherEmail = ''
+         WHERE LOWER(teacherEmail) = LOWER($1) AND NOT (id = ANY($2))`,
+        [user.email, req.body.courseIds]);
+      await assignCourses(user.email, name, req.body.courseIds);
+    }
+    res.json({ success: true });
+  } catch (err) { serverError(res, err); }
+});
+
+// Réinitialiser le mot de passe d'un compte
+app.put('/api/users/:id/password', authenticate, requireAdmin, async (req, res) => {
+  const password = String(req.body.password || '');
+  if (password.length < MIN_PASSWORD) return res.status(400).json({ error: `Mot de passe : ${MIN_PASSWORD} caractères minimum` });
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    const result = await db.run('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, parseInt(req.params.id, 10)]);
+    if (result.rowCount === 0) return res.status(404).json({ error: 'Compte introuvable' });
+    res.json({ success: true });
+  } catch (err) { serverError(res, err); }
+});
+
+// Supprimer un compte : ses cours repassent « À définir »
+app.delete('/api/users/:id', authenticate, requireAdmin, async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (id === req.user.id) return res.status(400).json({ error: 'Vous ne pouvez pas supprimer votre propre compte' });
+  try {
+    const user = await db.get('SELECT * FROM users WHERE id = $1', [id]);
+    if (!user) return res.status(404).json({ error: 'Compte introuvable' });
+    if (user.role === 'admin') {
+      const admins = await db.get("SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin'");
+      if (admins.n <= 1) return res.status(400).json({ error: 'Impossible de supprimer le dernier administrateur' });
+    }
+    await db.run(`UPDATE courses SET teacher = 'À définir', teacherEmail = '' WHERE LOWER(teacherEmail) = LOWER($1)`, [user.email]);
+    await db.run('DELETE FROM users WHERE id = $1', [id]);
+    res.json({ success: true });
+  } catch (err) { serverError(res, err); }
+});
+
+// ============================================================
 //  ADMINISTRATION (ajout d'enseignants / admins)
 //  Désactivé si ADMIN_TOKEN n'est pas défini. Token passé dans l'en-tête
 //  « X-Admin-Token » (ou ?token= pour compatibilité).
@@ -528,7 +641,7 @@ app.post('/api/auth/change-password', authenticate, async (req, res) => {
   try {
     const user = await db.get('SELECT * FROM users WHERE id = $1', [req.user.id]);
     if (!user || !(await bcrypt.compare(currentPassword, user.password_hash))) {
-      return res.status(401).json({ error: 'Mot de passe actuel incorrect' });
+      return res.status(400).json({ error: 'Mot de passe actuel incorrect' });
     }
     const hash = await bcrypt.hash(newPassword, 10);
     await db.run('UPDATE users SET password_hash = $1 WHERE id = $2', [hash, user.id]);
